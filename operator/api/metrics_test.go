@@ -14,28 +14,33 @@ import (
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/hivetest"
 	"github.com/go-openapi/runtime"
-	"go.uber.org/goleak"
 
 	"github.com/cilium/cilium/api/v1/operator/models"
 	"github.com/cilium/cilium/api/v1/operator/server/restapi/metrics"
 	operatorMetrics "github.com/cilium/cilium/operator/metrics"
 	"github.com/cilium/cilium/pkg/hive"
 	cellMetric "github.com/cilium/cilium/pkg/metrics"
+	ciliumMetrics "github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/metrics/metric"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/safeio"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 func TestMetricsHandlerWithoutMetrics(t *testing.T) {
-	defer goleak.VerifyNone(
+	defer testutils.GoleakVerifyNone(
 		t,
 		// ignore goroutine started from sigs.k8s.io/controller-runtime/pkg/log.go init function
-		goleak.IgnoreTopFunction("time.Sleep"),
+		testutils.GoleakIgnoreTopFunction("time.Sleep"),
 	)
 
 	rr := httptest.NewRecorder()
 
 	hive := hive.New(
-		operatorMetrics.Cell,
+		cell.Provide(ciliumMetrics.NewRegistry),
+		cell.Provide(func() (*option.DaemonConfig, ciliumMetrics.RegistryConfig) {
+			return option.Config, ciliumMetrics.RegistryConfig{}
+		}),
 		cell.Provide(func() operatorMetrics.SharedConfig {
 			return operatorMetrics.SharedConfig{
 				EnableMetrics: false,
@@ -68,7 +73,7 @@ func TestMetricsHandlerWithoutMetrics(t *testing.T) {
 		t.Fatalf("expected http status code %d, got %d", http.StatusOK, rr.Result().StatusCode)
 	}
 
-	body, err := safeio.ReadAllLimit(rr.Result().Body, safeio.KB)
+	body, err := safeio.ReadAllLimit(rr.Result().Body, safeio.MB)
 	if err != nil {
 		t.Fatalf("error while reading response body: %s", err)
 	}
@@ -89,10 +94,10 @@ func TestMetricsHandlerWithoutMetrics(t *testing.T) {
 }
 
 func TestMetricsHandlerWithMetrics(t *testing.T) {
-	defer goleak.VerifyNone(
+	defer testutils.GoleakVerifyNone(
 		t,
 		// ignore goroutine started from sigs.k8s.io/controller-runtime/pkg/log.go init function
-		goleak.IgnoreTopFunction("time.Sleep"),
+		testutils.GoleakIgnoreTopFunction("time.Sleep"),
 	)
 
 	rr := httptest.NewRecorder()
@@ -104,6 +109,10 @@ func TestMetricsHandlerWithMetrics(t *testing.T) {
 				EnableMetrics: true,
 			}
 		}),
+		cell.Provide(func() *option.DaemonConfig {
+			return option.Config
+		}),
+
 		cellMetric.Metric(newTestMetrics),
 
 		MetricsHandlerCell,

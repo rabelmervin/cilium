@@ -20,9 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/pkg/crypto/certificatemanager"
-	"github.com/cilium/cilium/pkg/defaults"
 	envoypolicy "github.com/cilium/cilium/pkg/envoy/policy"
-	"github.com/cilium/cilium/pkg/fqdn/re"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/option"
@@ -61,6 +59,13 @@ func TestCacheManagement(t *testing.T) {
 	// Nonsense delete of entry that isn't yet inserted
 	deleted := cache.delete(identity)
 	require.False(t, deleted)
+
+	// Insert directly to cache and delete the entry.
+	csp := cache.lookupOrCreate(identity)
+	require.NotNil(t, csp)
+	require.Nil(t, csp.getPolicy())
+	removed := cache.delete(identity)
+	require.True(t, removed)
 
 	// Insert identity twice. Should be the same policy.
 	policy1, updated, err := cache.updateSelectorPolicy(identity, ep1.Id)
@@ -1945,7 +1950,6 @@ func addFQDNIdentity(fqdnSel api.FQDNSelector, c identity.IdentityMap) (id ident
 // Validate that incrementally deleted identities are handled properly when present in both CIDR and FQDN rules.
 func Test_IncrementalFQDNDeletion(t *testing.T) {
 	logger := hivetest.Logger(t)
-	re.InitRegexCompileLRU(logger, defaults.FQDNRegexCompileLRUSize)
 	// Cache policy enforcement value from when test was ran to avoid pollution
 	// across tests.
 	oldPolicyEnable := GetPolicyEnabled()

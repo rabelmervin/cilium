@@ -82,7 +82,7 @@ func TestScript(t *testing.T) {
 
 				cell.Config(loadbalancer.TestConfig{}),
 				maglev.Cell,
-				node.LocalNodeStoreCell,
+				node.LocalNodeStoreTestCell,
 				cell.Provide(
 					func(cfg loadbalancer.TestConfig) *loadbalancer.TestConfig { return &cfg },
 					tables.NewNodeAddressTable,
@@ -92,19 +92,16 @@ func TestScript(t *testing.T) {
 						return &option.DaemonConfig{
 							EnableIPv4:                      true,
 							EnableIPv6:                      true,
-							EnableInternalTrafficPolicy:     true,
 							EnableHealthCheckLoadBalancerIP: true,
 						}
 					},
 					func() kpr.KPRConfig {
 						return kpr.KPRConfig{
-							KubeProxyReplacement: option.KubeProxyReplacementTrue,
+							KubeProxyReplacement: true,
 							EnableNodePort:       true,
 						}
 					},
 				),
-
-				cell.Invoke(statedb.RegisterTable[tables.NodeAddress]),
 			)
 
 			flags := pflag.NewFlagSet("", pflag.ContinueOnError)

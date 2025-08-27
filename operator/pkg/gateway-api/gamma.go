@@ -92,13 +92,12 @@ func (r *gammaReconciler) enqueueAll() handler.MapFunc {
 	// Services; each ReferenceGrant update will trigger reconciliation of _all_ Services.
 	return func(ctx context.Context, o client.Object) []reconcile.Request {
 		scopedLog := r.logger.With(
-			logfields.Controller, gamma,
 			logfields.Resource, client.ObjectKeyFromObject(o),
 		)
 		list := &corev1.ServiceList{}
 
 		if err := r.Client.List(ctx, list, &client.ListOptions{}); err != nil {
-			scopedLog.Error("Failed to list Service", logfields.Error, err)
+			scopedLog.ErrorContext(ctx, "Failed to list Service", logfields.Error, err)
 			return []reconcile.Request{}
 		}
 
@@ -111,7 +110,7 @@ func (r *gammaReconciler) enqueueAll() handler.MapFunc {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: svc,
 			})
-			scopedLog.Info("Enqueued Service for resource", gamma, svc)
+			scopedLog.InfoContext(ctx, "Enqueued Service for resource", gamma, svc)
 		}
 		return requests
 	}
@@ -150,7 +149,6 @@ func getGammaReconcileRequestsForRoute(ctx context.Context, c client.Client, obj
 	var reqs []reconcile.Request
 
 	scopedLog := logger.With(
-		logfields.Controller, gamma,
 		logfields.Resource, types.NamespacedName{
 			Namespace: object.GetNamespace(),
 			Name:      object.GetName(),
@@ -170,19 +168,19 @@ func getGammaReconcileRequestsForRoute(ctx context.Context, c client.Client, obj
 			Name:      string(parent.Name),
 		}, s); err != nil {
 			if !k8serrors.IsNotFound(err) {
-				scopedLog.Error("Failed to get Gamma Service", logfields.Error, err)
+				scopedLog.ErrorContext(ctx, "Failed to get Gamma Service", logfields.Error, err)
 			}
 			continue
 		}
 
 		if !isValidGammaService(s) {
-			scopedLog.Warn("Service referenced as GAMMA parent is not valid")
+			scopedLog.WarnContext(ctx, "Service referenced as GAMMA parent is not valid")
 			continue
 		}
 
-		scopedLog.Info("Enqueued GAMMA Service for Route",
+		scopedLog.InfoContext(ctx, "Enqueued GAMMA Service for Route",
 			logfields.K8sNamespace, ns,
-			logfields.Resource, parent.Name,
+			logfields.ParentResource, parent.Name,
 			logfields.Route, object.GetName())
 
 		reqs = append(reqs, reconcile.Request{

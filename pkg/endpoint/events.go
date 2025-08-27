@@ -30,7 +30,7 @@ func (ev *EndpointRegenerationEvent) Handle(res chan any) {
 	// Compute policy on the first regeneration before acquiring the build permit in
 	// QueueEndpointBuild below
 	select {
-	case <-e.InitialEnvoyPolicyComputed:
+	case <-e.initialEnvoyPolicyComputed:
 		// Already done
 	default:
 		err, release := e.ComputeInitialPolicy(regenContext)
@@ -362,6 +362,13 @@ func (e *Endpoint) Stop() {
 	// and when they will happen. After this point, no events for the endpoint
 	// will be processed on its EventQueue, specifically regenerations.
 	e.eventQueue.WaitToBeDrained()
+
+	// Shutdown the DNS History trigger after event queue has been drained.
+	// This makes sure that any pending changes to endpoint DNS state are flushed
+	// to disk.
+	if trigger := e.dnsHistoryTrigger.Swap(nil); trigger != nil {
+		trigger.Shutdown()
+	}
 
 	// Given that we are deleting the endpoint and that no more builds are
 	// going to occur for this endpoint, close the channel which signals whether

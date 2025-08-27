@@ -14,6 +14,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/cilium/cilium/api/v1/models"
+	fakeTypes "github.com/cilium/cilium/pkg/datapath/fake/types"
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/identity/identitymanager"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
@@ -33,7 +34,7 @@ func TestMarkAndSweep(t *testing.T) {
 	logger := hivetest.Logger(t)
 	s := setupEndpointManagerSuite(t)
 	// Open-code WithPeriodicGC() to avoid running the controller
-	mgr := New(logger, nil, &dummyEpSyncher{}, nil, nil, nil)
+	mgr := New(logger, nil, &dummyEpSyncher{}, nil, nil, nil, defaultEndpointManagerConfig)
 	mgr.checkHealth = fakeCheck
 	mgr.deleteEndpoint = endpointDeleteFunc(mgr.waitEndpointRemoved)
 
@@ -46,7 +47,7 @@ func TestMarkAndSweep(t *testing.T) {
 	allEndpointIDs := append(healthyEndpointIDs, endpointIDToDelete)
 	for _, id := range allEndpointIDs {
 		model := newTestEndpointModel(int(id), endpoint.StateReady)
-		ep, err := endpoint.NewEndpointFromChangeModel(t.Context(), logger, nil, &endpoint.MockEndpointBuildQueue{}, nil, nil, nil, nil, nil, identitymanager.NewIDManager(logger), nil, nil, s.repo, testipcache.NewMockIPCache(), &endpoint.FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), ctmap.NewFakeGCRunner(), nil, model)
+		ep, err := endpoint.NewEndpointFromChangeModel(t.Context(), logger, nil, &endpoint.MockEndpointBuildQueue{}, nil, nil, nil, nil, nil, identitymanager.NewIDManager(logger), nil, nil, s.repo, testipcache.NewMockIPCache(), &endpoint.FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), ctmap.NewFakeGCRunner(), nil, model, fakeTypes.WireguardConfig{})
 		require.NoError(t, err)
 
 		ep.Start(uint16(model.ID))

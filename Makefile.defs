@@ -60,8 +60,8 @@ ifeq ($(DOCKER_IMAGE_TAG),)
 endif
 
 # renovate: datasource=docker depName=gcr.io/etcd-development/etcd
-ETCD_IMAGE_VERSION = v3.6.1
-ETCD_IMAGE_SHA = sha256:56bc6ef112a4e2702142d365baecae44cba85c6efc6146b4a41a4c655dd7d231
+ETCD_IMAGE_VERSION = v3.6.4
+ETCD_IMAGE_SHA = sha256:5d10878e4fd4ebfdf82bc142fb044542a3ca514c0ee169277643a84d6816892a
 ETCD_IMAGE=gcr.io/etcd-development/etcd:$(ETCD_IMAGE_VERSION)@$(ETCD_IMAGE_SHA)
 
 CILIUM_BUILDER_IMAGE=$(shell cat $(ROOT_DIR)/images/cilium/Dockerfile | grep "ARG CILIUM_BUILDER_IMAGE=" | cut -d"=" -f2)
@@ -89,7 +89,8 @@ GO_TAGS_FLAGS += osusergo
 # RACE is specified.
 GOTEST_COVER_OPTS =
 
-CODEOWNERS_PATH ?= $(ROOT_DIR)/CODEOWNERS
+CODEOWNERS_PATH_EVAL := $(shell echo $(wildcard $(ROOT_DIR)/*OWNERS*) | tr ' ' ',')
+CODEOWNERS_PATH ?= "$(CODEOWNERS_PATH_EVAL)"
 
 # By default, just print go test output immediately to the terminal. If tparse
 # is installed, use it to format the output. Use -progress instead of -follow,
@@ -130,8 +131,8 @@ ifneq ($(GOTEST_FORMATTER),cat)
 endif
 
 # renovate: datasource=docker depName=golangci/golangci-lint
-GOLANGCILINT_WANT_VERSION = v2.2.0
-GOLANGCILINT_IMAGE_SHA = sha256:28b14fcc37d84ed3135547b1f317ad41821cf3e1ecee5ebcdb45ab9c01f503c7
+GOLANGCILINT_WANT_VERSION = v2.4.0
+GOLANGCILINT_IMAGE_SHA = sha256:91460846c43b3de53eb77e968b17363e8747e6f3fc190575b52be60c49446e23
 GOLANGCILINT_VERSION = $(shell golangci-lint version --short 2>/dev/null)
 
 VERSION = $(shell cat $(dir $(lastword $(MAKEFILE_LIST)))/VERSION)
@@ -161,7 +162,7 @@ ifneq ($(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/images/cilium/Dockerfile),
 endif
 
 # Use git only if in a Git repo, otherwise find the files from the file system
-BPF_SRCFILES_IGNORE = bpf/.gitignore
+BPF_SRCFILES_IGNORE = bpf/.gitignore bpf/tests/% bpf/complexity-tests/% bpf/custom/% bpf/Makefile bpf/Makefile.bpf
 ifneq ($(wildcard $(dir $(lastword $(MAKEFILE_LIST)))/.git/HEAD),)
     BPF_SRCFILES := $(shell git ls-files $(ROOT_DIR)/bpf/ | LC_ALL=C sort | tr "\n" ' ')
 else
@@ -179,6 +180,9 @@ GO_CLEAN_FLAGS += -mod=vendor
 
 CGO_ENABLED ?= 0
 
+# See https://pkg.go.dev/internal/goexperiment
+GOEXPERIMENT ?=
+
 # Support CGO cross-compiling for amd64 and arm64 targets
 CGO_CC =
 CROSS_ARCH =
@@ -191,7 +195,11 @@ else ifeq ($(CROSS_ARCH),amd64)
     CGO_CC = CC=x86_64-linux-gnu-gcc
 endif
 
-GO_BUILD = CGO_ENABLED=$(CGO_ENABLED) $(CGO_CC) $(GO) build
+ifneq ($(GOEXPERIMENT),)
+    GO_BUILD = GOEXPERIMENT=$(GOEXPERIMENT) CGO_ENABLED=$(CGO_ENABLED) $(CGO_CC) $(GO) build
+else
+    GO_BUILD = CGO_ENABLED=$(CGO_ENABLED) $(CGO_CC) $(GO) build
+endif
 
 ifneq ($(RACE),)
     GO_BUILD_FLAGS += -race
@@ -209,6 +217,11 @@ endif
 
 ifneq ($(LOCKDEBUG),)
     GO_TAGS_FLAGS += lockdebug
+endif
+
+ifneq ($(findstring boringcrypto,$(GOEXPERIMENT)),)
+    CGO_ENABLED = 1
+    GO_BUILD_LDFLAGS += -linkmode external -extldflags "-static --enable-static-nss"
 endif
 
 GO_BUILD_FLAGS += -ldflags '$(GO_BUILD_LDFLAGS) $(EXTRA_GO_BUILD_LDFLAGS)' -tags=$(call join-with-comma,$(GO_TAGS_FLAGS)) $(EXTRA_GO_BUILD_FLAGS)

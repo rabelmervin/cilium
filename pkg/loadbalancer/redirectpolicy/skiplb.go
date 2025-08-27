@@ -101,7 +101,7 @@ func skipRedirectsEqual(a, b map[loadbalancer.ServiceName][]loadbalancer.L3n4Add
 		if !ok {
 			return false
 		}
-		if !slices.EqualFunc(addrA, addrB, func(a, b loadbalancer.L3n4Addr) bool { return a.DeepEqual(&b) }) {
+		if !slices.Equal(addrA, addrB) {
 			return false
 		}
 	}
@@ -154,7 +154,7 @@ func (dsl *desiredSkipLB) TableRow() []string {
 		dsl.LRPID.String(),
 		strings.Join(skipRedirects, ", "),
 		cookie,
-		string(dsl.Status.Kind),
+		dsl.Status.Kind.String(),
 		duration.HumanDuration(time.Since(dsl.Status.UpdatedAt)),
 	}
 }
@@ -186,15 +186,12 @@ var (
 )
 
 func newDesiredSkipLBTable(db *statedb.DB) (statedb.RWTable[*desiredSkipLB], error) {
-	tbl, err := statedb.NewTable(
+	return statedb.NewTable(
+		db,
 		"desired-skiplbmap",
 		desiredSkipLBPodIndex,
 		desiredSkipLBLRPIndex,
 	)
-	if err != nil {
-		return nil, err
-	}
-	return tbl, db.RegisterTable(tbl)
 }
 
 type skiplbOps struct {
@@ -212,14 +209,14 @@ func (ops *skiplbOps) Delete(ctx context.Context, txn statedb.ReadTxn, _ statedb
 		if addr.IsIPv6() {
 			deleteErr = ops.m.DeleteLB6(&lbmaps.SkipLB6Key{
 				NetnsCookie: *d.NetnsCookie,
-				Address:     addr.AddrCluster.Addr().As16(),
-				Port:        addr.Port,
+				Address:     addr.Addr().As16(),
+				Port:        addr.Port(),
 			})
 		} else {
 			deleteErr = ops.m.DeleteLB4(&lbmaps.SkipLB4Key{
 				NetnsCookie: *d.NetnsCookie,
-				Address:     addr.AddrCluster.Addr().As4(),
-				Port:        addr.Port,
+				Address:     addr.Addr().As4(),
+				Port:        addr.Port(),
 			})
 		}
 		if deleteErr != nil && !errors.Is(deleteErr, ebpf.ErrKeyNotExist) {
@@ -268,9 +265,9 @@ func (ops *skiplbOps) Update(ctx context.Context, txn statedb.ReadTxn, _ statedb
 		for _, addr := range addrs {
 			var addErr error
 			if addr.IsIPv6() {
-				addErr = ops.m.AddLB6(*d.NetnsCookie, addr.AddrCluster.AsNetIP(), addr.Port)
+				addErr = ops.m.AddLB6(*d.NetnsCookie, addr.AddrCluster().AsNetIP(), addr.Port())
 			} else {
-				addErr = ops.m.AddLB4(*d.NetnsCookie, addr.AddrCluster.AsNetIP(), addr.Port)
+				addErr = ops.m.AddLB4(*d.NetnsCookie, addr.AddrCluster().AsNetIP(), addr.Port())
 			}
 			if addErr != nil {
 				err = errors.Join(err, addErr)
@@ -285,14 +282,14 @@ func (ops *skiplbOps) Update(ctx context.Context, txn statedb.ReadTxn, _ statedb
 		if addr.IsIPv6() {
 			deleteErr = ops.m.DeleteLB6(&lbmaps.SkipLB6Key{
 				NetnsCookie: *d.NetnsCookie,
-				Address:     addr.AddrCluster.Addr().As16(),
-				Port:        addr.Port,
+				Address:     addr.Addr().As16(),
+				Port:        addr.Port(),
 			})
 		} else {
 			deleteErr = ops.m.DeleteLB4(&lbmaps.SkipLB4Key{
 				NetnsCookie: *d.NetnsCookie,
-				Address:     addr.AddrCluster.Addr().As4(),
-				Port:        addr.Port,
+				Address:     addr.Addr().As4(),
+				Port:        addr.Port(),
 			})
 		}
 		if deleteErr != nil && !errors.Is(deleteErr, ebpf.ErrKeyNotExist) {

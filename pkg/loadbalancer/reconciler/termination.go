@@ -28,8 +28,8 @@ import (
 )
 
 // SocketTerminationCell runs a background job that monitors the backends table for
-// unhealthy and deleted backends and terminates UDP sockets connected to these backends
-// to signal to the application that the destination has become unreachable.
+// unhealthy and deleted backends and terminates UDP & TCP sockets connected to these
+// backends to signal to the application that the destination has become unreachable.
 var SocketTerminationCell = cell.Module(
 	"socket-termination",
 	"Terminates sockets connected to deleted backends",
@@ -45,8 +45,8 @@ var SocketTerminationCell = cell.Module(
 				all:     netns.All,
 			}
 		},
-		func(log *slog.Logger) sockets.SocketDestroyer {
-			return socketDestroyer{log}
+		func() socketDestroyerFactory {
+			return makeSocketDestroyer
 		},
 	),
 
@@ -64,8 +64,8 @@ type socketTerminationParams struct {
 	ExtConfig lb.ExternalConfig
 	LBMaps    maps.LBMaps
 
-	SocketDestroyer sockets.SocketDestroyer
-	NetNSOps        netnsOps
+	MakeSocketDestroyer socketDestroyerFactory
+	NetNSOps            netnsOps
 
 	// TestSyncChan is used by the tests to synchronize with the job so it
 	// knows when to delete the backend.
@@ -83,24 +83,24 @@ type netnsOps struct {
 	all     func() (iter.Seq2[string, *netns.NetNS], <-chan error)
 }
 
-type socketDestroyer struct {
-	log *slog.Logger
-}
+// socketDestroyerFactory creates a level of indirection that makes it possible
+// to inject mock SocketDestroyers in tests. SocketDestoyer cannot simply be
+// Provide()ed above, since the invocation of NewSocketDestroyer must be
+// deferred until all maps are created. We want to run it right before
+// socketTerminationLoop is invoked.
+type socketDestroyerFactory func(socketTerminationParams) (sockets.SocketDestroyer, error)
 
-func (sd socketDestroyer) Destroy(filter sockets.SocketFilter) error {
-	return sockets.Destroy(sd.log, filter)
+func makeSocketDestroyer(p socketTerminationParams) (sockets.SocketDestroyer, error) {
+	sockRevNat4, sockRevNat6 := p.LBMaps.SockRevNat()
+	sd, err := sockets.NewSocketDestroyer(p.Log, sockRevNat4, sockRevNat6)
+	if err != nil {
+		return nil, err
+	}
+
+	return sd, nil
 }
 
 func registerSocketTermination(p socketTerminationParams) error {
-	if p.SocketDestroyer == nil {
-		// To make the load-balancer cell easier to use in tests we don't require that
-		// SocketDestroyer is always provided.
-		if p.TestConfig == nil {
-			return fmt.Errorf("SocketDestroyer not provided and not running in tests")
-		}
-		return nil
-	}
-
 	if !(p.ExtConfig.EnableSocketLB || p.ExtConfig.BPFSocketLBHostnsOnly) {
 		return nil
 	}
@@ -109,14 +109,19 @@ func registerSocketTermination(p socketTerminationParams) error {
 		job.OneShot(
 			"socket-termination",
 			func(ctx context.Context, h cell.Health) error {
-				return socketTerminationLoop(p, ctx, h)
+				sd, err := p.MakeSocketDestroyer(p)
+				if err != nil {
+					return fmt.Errorf("creating socket destroyer: %w", err)
+				}
+
+				return socketTerminationLoop(p, sd, ctx, h)
 			},
 		))
 
 	return nil
 }
 
-func socketTerminationLoop(p socketTerminationParams, ctx context.Context, health cell.Health) error {
+func socketTerminationLoop(p socketTerminationParams, sd sockets.SocketDestroyer, ctx context.Context, health cell.Health) error {
 	wtxn := p.DB.WriteTxn(p.Backends)
 	changeIter, err := p.Backends.Changes(wtxn)
 	wtxn.Commit()
@@ -138,14 +143,15 @@ func socketTerminationLoop(p socketTerminationParams, ctx context.Context, healt
 				p.TestSyncChan = nil
 			}
 
-			if backend.Address.L4Addr.Protocol != lb.UDP {
+			if backend.Address.Protocol() != lb.UDP &&
+				backend.Address.Protocol() != lb.TCP {
 				continue
 			}
 
 			// Terminate the sockets connected to backends that have been either
 			// deleted or which are no longer considered viable.
 			if change.Deleted || !backend.IsAlive() {
-				opSupported := terminateUDPConnectionsToBackend(p, backend.Address)
+				opSupported := terminateConnectionsToBackend(p, sd, backend.Address)
 				if !opSupported {
 					// The kernel doesn't support socket termination. We can stop processing.
 					p.Log.Error("Forcefully terminating sockets connected to deleted service backends " +
@@ -167,30 +173,46 @@ func socketTerminationLoop(p socketTerminationParams, ctx context.Context, healt
 	}
 }
 
-// terminateUDPConnectionsToBackend closes UDP connection sockets that match the destination
-// l3/l4 tuple addr that also are tracked in the sock rev nat map (including socket cookie).
-func terminateUDPConnectionsToBackend(p socketTerminationParams, l3n4Addr lb.L3n4Addr) (opSupported bool) {
+// terminateConnectionsToBackend closes UDP & TCP connection sockets that match
+// the destination l3/l4 tuple addr that also are tracked in the sock rev nat map
+// (including socket cookie).
+func terminateConnectionsToBackend(p socketTerminationParams, sd sockets.SocketDestroyer, l3n4Addr lb.L3n4Addr) (opSupported bool) {
 	opSupported = true
 
 	var (
 		family   uint8
 		protocol uint8
+		states   uint32
 	)
-	ip := net.IP(l3n4Addr.AddrCluster.Addr().AsSlice())
-	l4Addr := l3n4Addr.L4Addr
+	ip := net.IP(l3n4Addr.Addr().AsSlice())
 
-	switch l3n4Addr.Protocol {
-	case lb.UDP, lb.ANY:
+	switch l3n4Addr.Protocol() {
+	case lb.UDP:
 		protocol = unix.IPPROTO_UDP
+		states = sockets.StateFilterUDP
+	case lb.TCP:
+		protocol = unix.IPPROTO_TCP
+		states = sockets.StateFilterTCP
+		// Currently terminating TCP is false by default since iterating
+		// TCP sockets can become expensive compared to UDP due to the
+		// sheer number of sockets in the system. Once this is optimized
+		// where the cost is significantly reduced, the hidden config flag
+		// can be removed.
+		if !p.Config.LBSockTerminateAllProtos {
+			return
+		}
 	default:
 		return
 	}
+
 	p.Log.Debug("Terminating sockets connected to deleted backend", logfields.Deleted, l3n4Addr)
+
 	if l3n4Addr.IsIPv6() {
 		family = syscall.AF_INET6
 	} else {
 		family = syscall.AF_INET
 	}
+
 	// Filter pod connections load-balanced to the passed service backend.
 	//
 	// When pod traffic is load-balanced to service backends, the cilium datapath
@@ -204,11 +226,12 @@ func terminateUDPConnectionsToBackend(p socketTerminationParams, l3n4Addr lb.L3n
 
 	destroy := func(nsName string, ns *netns.NetNS) error {
 		err := p.NetNSOps.do(ns, func() error {
-			return p.SocketDestroyer.Destroy(sockets.SocketFilter{
+			return sd.Destroy(p.Log, sockets.SocketFilter{
 				Family:    family,
 				Protocol:  protocol,
+				States:    states,
 				DestIp:    ip,
-				DestPort:  l4Addr.Port,
+				DestPort:  l3n4Addr.Port(),
 				DestroyCB: checkSockInRevNat,
 			})
 		})

@@ -74,11 +74,11 @@ func toLocalNodeInfo(n node.LocalNode) localNodeInfo {
 	if n.IPv6AllocCIDR != nil {
 		v6AllocCIDR = n.IPv6AllocCIDR.String()
 	}
-	if n.IPv4NativeRoutingCIDR != nil {
-		v4NativeRoutingCIDR = n.IPv4NativeRoutingCIDR.String()
+	if n.Local.IPv4NativeRoutingCIDR != nil {
+		v4NativeRoutingCIDR = n.Local.IPv4NativeRoutingCIDR.String()
 	}
-	if n.IPv6NativeRoutingCIDR != nil {
-		v6NativeRoutingCIDR = n.IPv6NativeRoutingCIDR.String()
+	if n.Local.IPv6NativeRoutingCIDR != nil {
+		v6NativeRoutingCIDR = n.Local.IPv6NativeRoutingCIDR.String()
 	}
 
 	return localNodeInfo{
@@ -322,15 +322,7 @@ stop:
 
 			// Reset the timer so that it gets triggered again after fullReconciliationInterval,
 			// to avoid introducing unnecessary churn in case a full reconciliation was already
-			// triggered due to other reasons. The Stop and select steps can be dropped once
-			// switching to using go v1.23: https://go.dev/wiki/Go123Timer
-			if !refresher.Stop() {
-				select {
-				case <-ticker.C():
-				default:
-				}
-			}
-
+			// triggered due to other reasons.
 			refresher.Reset(fullReconciliationInterval)
 		}
 	}

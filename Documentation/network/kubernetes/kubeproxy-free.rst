@@ -399,7 +399,7 @@ If the selected service backend IP for a given service matches the local
 node IP, the annotation ``service.cilium.io/proxy-delegation: delegate-if-local``
 will pass the received packet unmodified to the upper stack, so that a
 L7 proxy such as Envoy (if present) can handle the request in the host
-namespace.
+namespace. This mechanism is mainly targeted for north/south traffic.
 
 If the selected service backend is a remote IP, then the received packet
 is not pushed to the upper stack and instead the BPF code forwards the
@@ -421,6 +421,9 @@ packet natively with the configured forwarding method to the remote IP.
 
 In combination with ``externalTrafficPolicy=Local`` this mechanism also allows
 for pushing all traffic to the upper proxy.
+
+For east/west traffic, the service translation is skipped and the packet goes
+out of the node without any DNAT.
 
 Non-presence of the ``service.cilium.io/proxy-delegation`` annotation leaves
 all forwarding to BPF natively which is also the default for the kube-proxy
@@ -667,36 +670,43 @@ In DSR with Geneve, Cilium encapsulates packets to the Loadbalancer with the Gen
 header that includes the service IP/port in the Geneve option and redirects them
 to the backends.
 
-The Helm example configuration in a kube-proxy-free environment with DSR and
-Geneve dispatch enabled would look as follows:
+You can use DSR with Geneve for encapsulating LoadBalancer traffic regardless
+of whether you have configured the routing mode to route traffic using Geneve
+:ref:`encapsulation` or :ref:`native_routing`.
 
-.. parsed-literal::
-    helm install cilium |CHART_RELEASE| \\
-        --namespace kube-system \\
-        --set routingMode=native \\
-        --set tunnelProtocol=geneve \\
-        --set kubeProxyReplacement=true \\
-        --set loadBalancer.mode=dsr \\
-        --set loadBalancer.dsrDispatch=geneve \\
-        --set k8sServiceHost=${API_SERVER_IP} \\
-        --set k8sServicePort=${API_SERVER_PORT}
+.. tabs::
 
-DSR with Geneve is compatible with the Geneve encapsulation mode (:ref:`arch_overlay`).
-It works with either the direct routing mode or the Geneve tunneling mode. Unfortunately,
-it doesn't work with the vxlan encapsulation mode.
+    .. group-tab:: Native (Routing)
 
-The example configuration in DSR with Geneve dispatch and tunneling mode is as follows.
+        Install Cilium via ``helm install`` with DSR Geneve dispatch and Native (routing) Mode
 
-.. parsed-literal::
-    helm install cilium |CHART_RELEASE| \\
-        --namespace kube-system \\
-        --set routingMode=tunnel \\
-        --set tunnelProtocol=geneve \\
-        --set kubeProxyReplacement=true \\
-        --set loadBalancer.mode=dsr \\
-        --set loadBalancer.dsrDispatch=geneve \\
-        --set k8sServiceHost=${API_SERVER_IP} \\
-        --set k8sServicePort=${API_SERVER_PORT}
+        .. parsed-literal::
+
+            helm install cilium |CHART_RELEASE| \\
+                --namespace kube-system \\
+                --set routingMode=native \\
+                --set tunnelProtocol=geneve \\
+                --set kubeProxyReplacement=true \\
+                --set loadBalancer.mode=dsr \\
+                --set loadBalancer.dsrDispatch=geneve \\
+                --set k8sServiceHost=${API_SERVER_IP} \\
+                --set k8sServicePort=${API_SERVER_PORT}
+
+    .. group-tab:: Tunnel (encapsulation)
+
+        Install Cilium via ``helm install`` with DSR Geneve dispatch and tunneling (encapsulation) mode
+
+        .. parsed-literal::
+
+            helm install cilium |CHART_RELEASE| \\
+                --namespace kube-system \\
+                --set routingMode=tunnel \\
+                --set tunnelProtocol=geneve \\
+                --set kubeProxyReplacement=true \\
+                --set loadBalancer.mode=dsr \\
+                --set loadBalancer.dsrDispatch=geneve \\
+                --set k8sServiceHost=${API_SERVER_IP} \\
+                --set k8sServicePort=${API_SERVER_PORT}
 
 .. _Hybrid mode:
 
@@ -771,9 +781,28 @@ annotation mode with SNAT default would look as follows:
         --set routingMode=native \\
         --set kubeProxyReplacement=true \\
         --set loadBalancer.mode=snat \\
+        --set loadBalancer.dsrDispatch=geneve \\
         --set bpf.lbModeAnnotation=true \\
         --set k8sServiceHost=${API_SERVER_IP} \\
         --set k8sServicePort=${API_SERVER_PORT}
+
+.. note::
+
+    When using annotation-based DSR mode (``bpf.lbModeAnnotation=true``), as in the previous example, you must explicitly specify the ``loadBalancer.dsrDispatch`` parameter to define how DSR packets are dispatched to backends. Valid options are ``opt``, ``ipip``, and ``geneve``.
+
+    For example, for environments where Geneve encapsulation is not suitable, you can use IPIP instead:
+
+    .. parsed-literal::
+
+        helm install cilium |CHART_RELEASE| \\
+            --namespace kube-system \\
+            --set routingMode=native \\
+            --set kubeProxyReplacement=true \\
+            --set loadBalancer.mode=snat \\
+            --set loadBalancer.dsrDispatch=ipip \\
+            --set bpf.lbModeAnnotation=true \\
+            --set k8sServiceHost=${API_SERVER_IP} \\
+            --set k8sServicePort=${API_SERVER_PORT}
 
 Annotation-based Load Balancing Algorithm Selection
 ***************************************************
@@ -1344,12 +1373,18 @@ Cilium's eBPF kube-proxy replacement supports graceful termination of service
 endpoint pods. The Cilium agent detects such terminating Pod events, and
 increments the metric ``k8s_terminating_endpoints_events_total``.
 
-When Cilium agent receives a Kubernetes update event for a terminating endpoint,
-the datapath state for the endpoint is removed such that it won't service new
-connections, but the endpoint's active connections are able to terminate
-gracefully. The endpoint state is fully removed when the agent receives
-a Kubernetes delete event for the endpoint. The `Kubernetes
-pod termination <https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination>`_
+When Cilium agent receives a Kubernetes update event that marks an endpoint as
+terminating Cilium will retain the datapath state necessary for existing connections.
+The terminating endpoint will be used as fallback for new connections only if
+1) no active endpoints exist for the service and 2) terminating endpoint has condition ``serving``
+(e.g. pod is still passing `readinessProbes <https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes>`_).
+
+If ``publishNotReadyAddresses`` is set on the Service the endpoints received by Cilium
+may have both the ``ready`` and ``terminating`` conditions set. In this case Cilium follows
+kube-proxy and uses these for new connections, ignoring the ``terminating`` condition.
+
+The endpoint state is fully removed when the agent receives a Kubernetes delete
+event for the endpoint. The `Kubernetes pod termination <https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination>`_
 documentation contains more background on the behavior and configuration using ``terminationGracePeriodSeconds``.
 There are some special cases, like zero disruption during rolling updates, that require to be able to send traffic
 to Terminating Pods that are still Serving traffic during the Terminating period, the Kubernetes blog

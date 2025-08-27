@@ -18,6 +18,7 @@ import (
 
 	"github.com/cilium/cilium/pkg/annotation"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
+	"github.com/cilium/cilium/pkg/container/cache"
 	"github.com/cilium/cilium/pkg/ip"
 	"github.com/cilium/cilium/pkg/k8s"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
@@ -44,7 +45,7 @@ func isIngressDummyEndpoint(l3n4Addr loadbalancer.L3n4Addr) bool {
 	// control-plane, but due to rolling upgrades we cannot remove it immediately. Hence we have the
 	// special handling here to just ignore this endpoint to avoid populating the tables with unnecessary
 	// data.
-	return l3n4Addr.AddrCluster.Equal(ingressDummyAddress) && l3n4Addr.Port == ingressDummyPort
+	return l3n4Addr.AddrCluster() == ingressDummyAddress && l3n4Addr.Port() == ingressDummyPort
 }
 
 func getAnnotationServiceForwardingMode(cfg loadbalancer.Config, svc *slim_corev1.Service) (loadbalancer.SVCForwardingMode, error) {
@@ -206,13 +207,16 @@ func convertService(cfg loadbalancer.Config, extCfg loadbalancer.ExternalConfig,
 			for _, port := range svc.Spec.Ports {
 				fe := loadbalancer.FrontendParams{
 					Type:        loadbalancer.SVCTypeClusterIP,
-					PortName:    loadbalancer.FEPortName(port.Name),
+					PortName:    loadbalancer.FEPortName(cache.Strings.Get(port.Name)),
 					ServiceName: name,
 					ServicePort: uint16(port.Port),
 				}
-				fe.Address.AddrCluster = addr
-				fe.Address.Scope = loadbalancer.ScopeExternal
-				fe.Address.L4Addr = loadbalancer.NewL4Addr(loadbalancer.L4Type(port.Protocol), uint16(port.Port))
+				fe.Address = loadbalancer.NewL3n4Addr(
+					loadbalancer.L4Type(port.Protocol),
+					addr,
+					uint16(port.Port),
+					loadbalancer.ScopeExternal,
+				)
 				fes = append(fes, fe)
 			}
 		}
@@ -245,22 +249,30 @@ func convertService(cfg loadbalancer.Config, extCfg loadbalancer.ExternalConfig,
 
 						fe := loadbalancer.FrontendParams{
 							Type:        loadbalancer.SVCTypeNodePort,
-							PortName:    loadbalancer.FEPortName(port.Name),
+							PortName:    loadbalancer.FEPortName(cache.Strings.Get(port.Name)),
 							ServiceName: name,
 							ServicePort: uint16(port.Port),
 						}
 
 						switch family {
 						case slim_corev1.IPv4Protocol:
-							fe.Address.AddrCluster = zeroV4
+							fe.Address = loadbalancer.NewL3n4Addr(
+								loadbalancer.L4Type(port.Protocol),
+								zeroV4,
+								uint16(port.NodePort),
+								scope,
+							)
 						case slim_corev1.IPv6Protocol:
-							fe.Address.AddrCluster = zeroV6
+							fe.Address = loadbalancer.NewL3n4Addr(
+								loadbalancer.L4Type(port.Protocol),
+								zeroV6,
+								uint16(port.NodePort),
+								scope,
+							)
 						default:
 							continue
 						}
 
-						fe.Address.Scope = scope
-						fe.Address.L4Addr = loadbalancer.NewL4Addr(loadbalancer.L4Type(port.Protocol), uint16(port.NodePort))
 						fes = append(fes, fe)
 					}
 				}
@@ -270,7 +282,8 @@ func convertService(cfg loadbalancer.Config, extCfg loadbalancer.ExternalConfig,
 		// LoadBalancer
 		if svc.Spec.Type == slim_corev1.ServiceTypeLoadBalancer && expType.CanExpose(slim_corev1.ServiceTypeLoadBalancer) {
 			for _, ip := range svc.Status.LoadBalancer.Ingress {
-				if ip.IP == "" {
+				if ip.IP == "" ||
+					(ip.IPMode != nil && *ip.IPMode != slim_corev1.LoadBalancerIPModeVIP) /* KEP-1860, skip non-VIP */ {
 					continue
 				}
 
@@ -292,14 +305,17 @@ func convertService(cfg loadbalancer.Config, extCfg loadbalancer.ExternalConfig,
 					for _, port := range svc.Spec.Ports {
 						fe := loadbalancer.FrontendParams{
 							Type:        loadbalancer.SVCTypeLoadBalancer,
-							PortName:    loadbalancer.FEPortName(port.Name),
+							PortName:    loadbalancer.FEPortName(cache.Strings.Get(port.Name)),
 							ServiceName: name,
 							ServicePort: uint16(port.Port),
 						}
 
-						fe.Address.AddrCluster = addr
-						fe.Address.Scope = scope
-						fe.Address.L4Addr = loadbalancer.NewL4Addr(loadbalancer.L4Type(port.Protocol), uint16(port.Port))
+						fe.Address = loadbalancer.NewL3n4Addr(
+							loadbalancer.L4Type(port.Protocol),
+							addr,
+							uint16(port.Port),
+							scope,
+						)
 						fes = append(fes, fe)
 					}
 				}
@@ -326,14 +342,16 @@ func convertService(cfg loadbalancer.Config, extCfg loadbalancer.ExternalConfig,
 			for _, port := range svc.Spec.Ports {
 				fe := loadbalancer.FrontendParams{
 					Type:        loadbalancer.SVCTypeExternalIPs,
-					PortName:    loadbalancer.FEPortName(port.Name),
+					PortName:    loadbalancer.FEPortName(cache.Strings.Get(port.Name)),
 					ServiceName: name,
 					ServicePort: uint16(port.Port),
 				}
-
-				fe.Address.AddrCluster = addr
-				fe.Address.Scope = loadbalancer.ScopeExternal
-				fe.Address.L4Addr = loadbalancer.NewL4Addr(loadbalancer.L4Type(port.Protocol), uint16(port.Port))
+				fe.Address = loadbalancer.NewL3n4Addr(
+					loadbalancer.L4Type(port.Protocol),
+					addr,
+					uint16(port.Port),
+					loadbalancer.ScopeExternal,
+				)
 				fes = append(fes, fe)
 			}
 		}
@@ -395,28 +413,66 @@ func convertEndpoints(rawlog *slog.Logger, cfg loadbalancer.ExternalConfig, svcN
 				continue
 			}
 			for l4Addr, portNames := range be.Ports {
-				l3n4Addr := loadbalancer.L3n4Addr{
-					AddrCluster: addrCluster,
-					L4Addr:      l4Addr,
-				}
+				l3n4Addr := loadbalancer.NewL3n4Addr(
+					l4Addr.Protocol,
+					addrCluster,
+					l4Addr.Port,
+					loadbalancer.ScopeExternal,
+				)
 				if isIngressDummyEndpoint(l3n4Addr) {
 					continue
 				}
 
-				state := loadbalancer.BackendStateActive
-				if be.Terminating {
-					state = loadbalancer.BackendStateTerminating
+				// Filter out the unnamed port, if present
+				if idx := slices.Index(portNames, ""); idx != -1 {
+					if len(portNames) == 1 {
+						portNames = nil
+					} else {
+						portNames = slices.Concat(portNames[:idx], portNames[idx+1:])
+					}
 				}
-				be := loadbalancer.BackendParams{
+
+				var state loadbalancer.BackendState
+				switch {
+				case be.Conditions.IsReady():
+					// A backend that is ready (regardless of serving and terminating) is considered
+					// active. We may see backends that are ready+terminating if 'PublishNotReadyAddresses'
+					// is true. While it would be more logical to set this as terminating, we're following
+					// kube-proxy here and considering it as an active backend and not ignoring it even when
+					// other active backends are available.
+					//
+					// See also kube-proxy implementation at:
+					// https://github.com/kubernetes/kubernetes/blob/790393ae92e97262827d4f1fba24e8ae65bbada0/pkg/proxy/topology.go#L61
+					state = loadbalancer.BackendStateActive
+				case be.Conditions.IsTerminating() && !be.Conditions.IsServing():
+					// A backend that is terminating and not serving should not be used for load-balancing
+					// even if it's the only backend. A terminating backend is kept in the BPF maps until
+					// fully removed to avoid disrupting connections.
+					state = loadbalancer.BackendStateTerminatingNotServing
+				case be.Conditions.IsTerminating():
+					// A backend that is terminating and serving can still be used for new connections
+					// when no active backends are available. A terminating backend is kept in the BPF maps until
+					// fully removed to avoid disrupting connections.
+					state = loadbalancer.BackendStateTerminating
+				default:
+					// In all other cases we mark the backend as quarantined. Existing connections
+					// are not disrupted until the backend is actually deleted.
+					state = loadbalancer.BackendStateQuarantined
+				}
+				bep := loadbalancer.BackendParams{
 					Address:   l3n4Addr,
 					NodeName:  be.NodeName,
 					PortNames: portNames,
 					Weight:    loadbalancer.DefaultBackendWeight,
-					Zone:      be.Zone,
-					ForZones:  be.HintsForZones,
 					State:     state,
 				}
-				if !yield(be) {
+				if be.Zone != "" {
+					bep.Zone = &loadbalancer.BackendZone{
+						Zone:     be.Zone,
+						ForZones: be.HintsForZones,
+					}
+				}
+				if !yield(bep) {
 					break
 				}
 			}

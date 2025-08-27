@@ -23,18 +23,16 @@ jobs:
         include:
         # DON'T USE hourModulo=0 to avoid running ariane scheduled-workflows
         # at the same time as regular main scheduled workflows
-          - branch: 'v1.15'
-            hourModulo: 1
           - branch: 'v1.16'
-            hourModulo: 2
+            hourModulo: 1
           - branch: 'v1.17'
-            hourModulo: 3
+            hourModulo: 2
           - branch: 'v1.18'
-            hourModulo: 4
+            hourModulo: 3
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout branch
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           ref: ${{ matrix.branch }}
           persist-credentials: false
@@ -55,7 +53,7 @@ jobs:
           SHA=$(git rev-parse ${REF})
           readarray workflows < <((
             yq '.triggers["/test"].workflows[]' .github/ariane-config.yaml
-            yq '.tests[]' .github/ariane-scheduled.yaml
+            yq '.schedule.nightly.workflows[]' .github/ariane-config.yaml
           ) | sort -u)
 
           for workflow in "${workflows[@]}"; do

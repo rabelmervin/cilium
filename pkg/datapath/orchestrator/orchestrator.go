@@ -36,6 +36,7 @@ import (
 	"github.com/cilium/cilium/pkg/proxy"
 	"github.com/cilium/cilium/pkg/rate"
 	"github.com/cilium/cilium/pkg/time"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 const (
@@ -109,6 +110,7 @@ type orchestratorParams struct {
 	LBConfig            loadbalancer.Config
 	KPRConfig           kpr.KPRConfig
 	MaglevConfig        maglev.Config
+	WgConfig            wgTypes.WireguardConfig
 }
 
 func newOrchestrator(params orchestratorParams) *orchestrator {
@@ -165,7 +167,7 @@ func (o *orchestrator) reconciler(ctx context.Context, health cell.Health) error
 		stream.Filter(o.params.LocalNodeStore,
 			func(n node.LocalNode) bool {
 				if agentConfig.EnableIPv4 {
-					loopback := n.ServiceLoopbackIPv4 != nil
+					loopback := n.Local.ServiceLoopbackIPv4 != nil
 					ipv4GW := n.GetCiliumInternalIP(false) != nil
 					ipv4Range := n.IPv4AllocCIDR != nil
 					if !ipv4GW || !ipv4Range || !loopback {
@@ -208,6 +210,7 @@ func (o *orchestrator) reconciler(ctx context.Context, health cell.Health) error
 			o.params.KPRConfig,
 			o.params.MaglevConfig,
 			o.params.MTU,
+			o.params.WgConfig,
 		)
 		if err != nil {
 			health.Degraded("failed to get local node configuration", err)

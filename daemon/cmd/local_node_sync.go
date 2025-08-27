@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/hive/cell"
 
 	agentK8s "github.com/cilium/cilium/daemon/k8s"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/k8s"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
@@ -24,7 +25,6 @@ import (
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
-	wg "github.com/cilium/cilium/pkg/wireguard/agent"
 )
 
 type localNodeSynchronizerParams struct {
@@ -32,10 +32,9 @@ type localNodeSynchronizerParams struct {
 
 	Logger             *slog.Logger
 	Config             *option.DaemonConfig
+	TunnelConfig       tunnel.Config
 	K8sLocalNode       agentK8s.LocalNodeResource
 	K8sCiliumLocalNode agentK8s.LocalCiliumNodeResource
-
-	WireGuard *wg.Agent // nil if WireGuard is disabled
 }
 
 // localNodeSynchronizer performs the bootstrapping of the LocalNodeStore,
@@ -55,12 +54,10 @@ func (ini *localNodeSynchronizer) InitLocalNode(ctx context.Context, n *node.Loc
 		return err
 	}
 
+	n.Local.UnderlayProtocol = ini.TunnelConfig.UnderlayProtocol()
+
 	if err := ini.initFromK8s(ctx, n); err != nil {
 		return err
-	}
-
-	if ini.WireGuard != nil {
-		ini.WireGuard.InitLocalNodeFromWireGuard(n)
 	}
 
 	n.BootID = node.GetBootID(ini.Logger)
@@ -83,7 +80,7 @@ func (ini *localNodeSynchronizer) SyncLocalNode(ctx context.Context, store *node
 			if isBeingDeleted {
 				// Update LocalNode to mark it as being deleted
 				store.Update(func(ln *node.LocalNode) {
-					ln.IsBeingDeleted = true
+					ln.Local.IsBeingDeleted = true
 				})
 			}
 			new := parseNode(ini.Logger, ev.Object)
@@ -96,7 +93,7 @@ func (ini *localNodeSynchronizer) SyncLocalNode(ctx context.Context, store *node
 			ini.Logger.Info("Received Local node Delete event", logfields.Node, ev.Object)
 			// Mark as being deleted on explicit delete events too
 			store.Update(func(ln *node.LocalNode) {
-				ln.IsBeingDeleted = true
+				ln.Local.IsBeingDeleted = true
 			})
 		}
 
@@ -105,7 +102,10 @@ func (ini *localNodeSynchronizer) SyncLocalNode(ctx context.Context, store *node
 }
 
 func newLocalNodeSynchronizer(p localNodeSynchronizerParams) node.LocalNodeSynchronizer {
-	return &localNodeSynchronizer{localNodeSynchronizerParams: p}
+	return &localNodeSynchronizer{
+		localNodeSynchronizerParams: p,
+		old:                         node.LocalNode{Local: &node.LocalNodeInfo{}},
+	}
 }
 
 func (ini *localNodeSynchronizer) initFromConfig(ctx context.Context, n *node.LocalNode) error {
@@ -113,8 +113,8 @@ func (ini *localNodeSynchronizer) initFromConfig(ctx context.Context, n *node.Lo
 	n.ClusterID = ini.Config.ClusterID
 	n.Name = nodeTypes.GetName()
 
-	n.IPv4NativeRoutingCIDR = ini.Config.IPv4NativeRoutingCIDR
-	n.IPv6NativeRoutingCIDR = ini.Config.IPv6NativeRoutingCIDR
+	n.Local.IPv4NativeRoutingCIDR = ini.Config.IPv4NativeRoutingCIDR
+	n.Local.IPv6NativeRoutingCIDR = ini.Config.IPv6NativeRoutingCIDR
 
 	// Initialize node IP addresses from configuration.
 	if ini.Config.IPv6NodeAddr != "auto" {
@@ -231,7 +231,7 @@ func (ini *localNodeSynchronizer) initFromK8s(ctx context.Context, node *node.Lo
 func (ini *localNodeSynchronizer) mutableFieldsEqual(new *node.LocalNode) bool {
 	return maps.Equal(ini.old.Labels, new.Labels) &&
 		maps.Equal(ini.old.Annotations, new.Annotations) &&
-		ini.old.UID == new.UID && ini.old.ProviderID == new.ProviderID
+		ini.old.Local.UID == new.Local.UID && ini.old.Local.ProviderID == new.Local.ProviderID
 }
 
 // syncFromK8s synchronizes the fields that can be mutated at runtime
@@ -257,11 +257,6 @@ func (ini *localNodeSynchronizer) syncFromK8s(ln, new *node.LocalNode) {
 	ini.old.Labels = new.Labels
 
 	ini.Logger.Debug(
-		"Local node labels updated",
-		logfields.Labels, ln.Labels,
-	)
-
-	ini.Logger.Debug(
 		"Syncing local node with new annotations",
 		logfields.Annotations, ln.Annotations,
 		logfields.OldAnnotations, ini.old.Annotations,
@@ -273,28 +268,24 @@ func (ini *localNodeSynchronizer) syncFromK8s(ln, new *node.LocalNode) {
 	maps.Copy(ln.Annotations, new.Annotations)
 	ini.old.Annotations = new.Annotations
 
-	ini.Logger.Debug(
-		"Local node annotations updated",
-		logfields.Annotations, ln.Annotations,
-	)
-
-	ini.old.UID = new.UID
-	ini.old.ProviderID = new.ProviderID
-	ln.UID = new.UID
-	ln.ProviderID = new.ProviderID
+	ini.old.Local.UID = new.Local.UID
+	ini.old.Local.ProviderID = new.Local.ProviderID
+	ln.Local.UID = new.Local.UID
+	ln.Local.ProviderID = new.Local.ProviderID
 
 	ini.Logger.Debug(
 		"Local node UID and ProviderID updated",
-		logfields.UID, ln.UID,
-		logfields.ProviderID, ln.ProviderID,
+		logfields.UID, ln.Local.UID,
+		logfields.ProviderID, ln.Local.ProviderID,
 	)
 }
 
 func parseNode(logger *slog.Logger, k8sNode *slim_corev1.Node) *node.LocalNode {
 	return &node.LocalNode{
-		Logger:     logger,
-		Node:       *k8s.ParseNode(logger, k8sNode, source.Kubernetes),
-		UID:        k8sNode.GetUID(),
-		ProviderID: k8sNode.Spec.ProviderID,
+		Node: *k8s.ParseNode(logger, k8sNode, source.Kubernetes),
+		Local: &node.LocalNodeInfo{
+			UID:        k8sNode.GetUID(),
+			ProviderID: k8sNode.Spec.ProviderID,
+		},
 	}
 }

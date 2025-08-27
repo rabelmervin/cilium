@@ -62,9 +62,8 @@ var verdicts = []string{
 }
 
 // flowEventTypes are the valid event types supported by observe. This corresponds
-// to monitorAPI.MessageTypeNames, excluding MessageTypeNameAgent,
-// MessageTypeNameDebug and MessageTypeNameRecCapture. These excluded message
-// types are not supported by `hubble observe flows` but have separate
+// to monitorAPI.MessageTypeNames, excluding MessageTypeNameAgent and MessageTypeNameDebug.
+// These excluded message types are not supported by `hubble observe flows` but have separate
 // sub-commands.
 var flowEventTypes = []string{
 	monitorAPI.MessageTypeNameCapture,
@@ -692,11 +691,11 @@ func handleFlowArgs(writer io.Writer, ofilter *flowFilter, debug bool) (err erro
 		return fmt.Errorf("invalid output format: %s", formattingOpts.output)
 	}
 	if !jsonOut {
-		if len(experimentalOpts.fieldMask) > 0 {
+		if len(maskOpts.fieldMask) > 0 {
 			return fmt.Errorf("%s output format is not compatible with custom field mask", formattingOpts.output)
 		}
-		if experimentalOpts.useDefaultMasks {
-			experimentalOpts.fieldMask = defaults.FieldMask
+		if maskOpts.useDefaultMasks {
+			maskOpts.fieldMask = defaults.FieldMask
 		}
 	}
 
@@ -834,14 +833,12 @@ func getFlowsRequest(ofilter *flowFilter, allowlist []string, denylist []string)
 		First:     first,
 	}
 
-	if len(experimentalOpts.fieldMask) > 0 {
-		fm, err := fieldmaskpb.New(&flowpb.Flow{}, experimentalOpts.fieldMask...)
+	if len(maskOpts.fieldMask) > 0 {
+		fm, err := fieldmaskpb.New(&flowpb.Flow{}, maskOpts.fieldMask...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to construct field mask: %w", err)
 		}
-		req.Experimental = &observerpb.GetFlowsRequest_Experimental{
-			FieldMask: fm,
-		}
+		req.FieldMask = fm
 	}
 
 	return req, nil

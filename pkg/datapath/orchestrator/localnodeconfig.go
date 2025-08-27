@@ -5,6 +5,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 const (
@@ -52,6 +54,7 @@ func newLocalNodeConfig(
 	kprCfg kpr.KPRConfig,
 	maglevConfig maglev.Config,
 	mtuTbl statedb.Table[mtu.RouteMTU],
+	wgCfg wgTypes.WireguardConfig,
 ) (datapath.LocalNodeConfiguration, <-chan struct{}, error) {
 	auxPrefixes := []*cidr.CIDR{}
 
@@ -73,10 +76,21 @@ func newLocalNodeConfig(
 		auxPrefixes = append(auxPrefixes, serviceCIDR)
 	}
 
-	directRoutingDevice, directRoutingDevWatch := directRoutingDevTbl.Get(ctx, txn)
 	nativeDevices, devsWatch := tables.SelectedDevices(devices, txn)
 	nodeAddrsIter, addrsWatch := nodeAddresses.AllWatch(txn)
 	mtuRoute, _, mtuWatch, _ := mtuTbl.GetWatch(txn, mtu.MTURouteIndex.Query(mtu.DefaultPrefixV4))
+
+	watchChans := []<-chan struct{}{devsWatch, addrsWatch, mtuWatch}
+	var directRoutingDevice *tables.Device
+	if option.Config.DirectRoutingDeviceRequired(kprCfg, wgCfg.Enabled()) {
+		drd, directRoutingDevWatch := directRoutingDevTbl.Get(ctx, txn)
+		if drd == nil {
+			return datapath.LocalNodeConfiguration{}, nil, errors.New("direct routing device required but not configured")
+		}
+
+		watchChans = append(watchChans, directRoutingDevWatch)
+		directRoutingDevice = drd
+	}
 
 	return datapath.LocalNodeConfiguration{
 		NodeIPv4:                     localNode.GetNodeIP(false),
@@ -103,6 +117,7 @@ func newLocalNodeConfig(
 		EnableAutoDirectRouting:      config.EnableAutoDirectRouting,
 		DirectRoutingSkipUnreachable: config.DirectRoutingSkipUnreachable,
 		EnableLocalNodeRoute:         config.EnableLocalNodeRoute && config.IPAM != ipamOption.IPAMENI && config.IPAM != ipamOption.IPAMAzure && config.IPAM != ipamOption.IPAMAlibabaCloud,
+		EnableWireguard:              wgCfg.Enabled(),
 		EnableIPSec:                  config.EnableIPSec,
 		EnableIPSecEncryptedOverlay:  config.EnableIPSecEncryptedOverlay,
 		EncryptNode:                  config.EncryptNode,
@@ -112,5 +127,5 @@ func newLocalNodeConfig(
 		LBConfig:                     lbConfig,
 		KPRConfig:                    kprCfg,
 		MaglevConfig:                 maglevConfig,
-	}, common.MergeChannels(devsWatch, addrsWatch, directRoutingDevWatch, mtuWatch), nil
+	}, common.MergeChannels(watchChans...), nil
 }

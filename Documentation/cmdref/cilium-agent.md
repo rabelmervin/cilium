@@ -61,6 +61,7 @@ cilium-agent [flags]
       --bpf-neigh-global-max int                                  Maximum number of entries for the global BPF neighbor table (default 524288)
       --bpf-node-map-max uint32                                   Sets size of node bpf map which will be the max number of unique Node IPs in the cluster (default 16384)
       --bpf-policy-map-max int                                    Maximum number of entries in endpoint policy map (per endpoint) (default 16384)
+      --bpf-policy-map-pressure-metrics-threshold float           Sets threshold for emitting pressure metrics of policy maps (default 0.1)
       --bpf-policy-stats-map-max int                              Maximum number of entries in bpf policy stats map (default 65536)
       --bpf-root string                                           Path to BPF filesystem
       --bpf-sock-rev-map-max int                                  Maximum number of entries for the SockRevNAT BPF map
@@ -87,7 +88,7 @@ cilium-agent [flags]
       --datapath-mode string                                      Datapath mode name (veth, netkit, netkit-l2) (default "veth")
   -D, --debug                                                     Enable debugging mode
       --debug-verbose strings                                     List of enabled verbose debug groups
-      --devices strings                                           List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'
+      --devices strings                                           List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'; support '!' to exclude devices, e.g. '!eth+' excludes any device with prefix 'eth'. Note '!' says nothing about which ones to include. A device must match other criteria to be selected; The filters are matched in order and whatever matched first wins.
       --direct-routing-device string                              Device name used to connect nodes in direct routing mode (used by BPF NodePort, BPF host routing; if empty, automatically set to a device with k8s InternalIP/ExternalIP or with a default route)
       --direct-routing-skip-unreachable                           Enable skipping L2 routes between nodes on different subnets
       --disable-endpoint-crd                                      Disable use of CiliumEndpoint CRD
@@ -126,6 +127,7 @@ cilium-agent [flags]
       --enable-endpoint-lockdown-on-policy-overflow               When an endpoint's policy map overflows, shutdown all (ingress and egress) network traffic for that endpoint.
       --enable-endpoint-routes                                    Use per endpoint routes instead of routing via cilium_host
       --enable-envoy-config                                       Enable Envoy Config CRDs
+      --enable-extended-ip-protocols                              Enable traffic with extended IP protocols in datapath
       --enable-gateway-api                                        Enables Envoy secret sync for Gateway API related TLS secrets
       --enable-gops                                               Enable gops server (default true)
       --enable-health-check-loadbalancer-ip                       Enable access of the healthcheck nodePort on the LoadBalancerIP. Needs --enable-health-check-nodeport to be enabled
@@ -155,7 +157,7 @@ cilium-agent [flags]
       --enable-k8s-api-discovery                                  Enable discovery of Kubernetes API groups and resources with the discovery API
       --enable-l2-announcements                                   Enable L2 announcements
       --enable-l2-neigh-discovery                                 Enables L2 neighbor discovery used by kube-proxy-replacement and IPsec
-      --enable-l2-pod-announcements                               Enable announcing Pod IPs with Gratuitous ARP
+      --enable-l2-pod-announcements                               Enable announcing Pod IPs with Gratuitous ARP and NDP
       --enable-l7-proxy                                           Enable L7 proxy for L7 policy enforcement (default true)
       --enable-local-node-route                                   Enable installation of the route which points the allocation prefix of the local node (default true)
       --enable-local-redirect-policy                              Enable Local Redirect Policy
@@ -166,6 +168,7 @@ cilium-agent [flags]
       --enable-pmtu-discovery                                     Enable path MTU discovery to send ICMP fragmentation-needed replies to the client
       --enable-policy string                                      Enable policy enforcement (default "default")
       --enable-policy-secrets-sync                                Enables Envoy secret sync for Secrets used in CiliumNetworkPolicy and CiliumClusterwideNetworkPolicy
+      --enable-remote-node-masquerade                             Masquerade packets from endpoints leaving the host destined to a remote node in BPF masquerading mode. This option requires to set enable-bpf-masquerade to true.
       --enable-route-mtu-for-cni-chaining                         Enable route MTU for pod netns when CNI chaining is used
       --enable-sctp                                               Enable SCTP support (beta)
       --enable-service-topology                                   Enable support for service topology aware hints
@@ -233,7 +236,7 @@ cilium-agent [flags]
       --hubble-metrics-server-tls-cert-file string                Path to the public key file for the Hubble metrics server. The file must contain PEM encoded data.
       --hubble-metrics-server-tls-client-ca-files strings         Paths to one or more public key files of client CA certificates to use for TLS with mutual authentication (mTLS). The files must contain PEM encoded data. When provided, this option effectively enables mTLS.
       --hubble-metrics-server-tls-key-file string                 Path to the private key file for the Hubble metrics server. The file must contain PEM encoded data.
-      --hubble-monitor-events strings                             Cilium monitor events for Hubble to observe: [drop debug capture trace policy-verdict recorder trace-sock l7 agent]. By default, Hubble observes all monitor events.
+      --hubble-monitor-events strings                             Cilium monitor events for Hubble to observe: [drop debug capture trace policy-verdict trace-sock l7 agent]. By default, Hubble observes all monitor events.
       --hubble-network-policy-correlation-enabled                 Enable network policy correlation of Hubble flows (default true)
       --hubble-prefer-ipv6                                        Prefer IPv6 addresses for announcing nodes when both address types are available.
       --hubble-redact-enabled                                     Hubble redact sensitive information from flows
@@ -292,7 +295,7 @@ cilium-agent [flags]
       --k8s-require-ipv6-pod-cidr                                 Require IPv6 PodCIDR to be specified in node resource
       --k8s-service-proxy-name string                             Value of K8s service-proxy-name label for which Cilium handles the services (empty = all services without service.kubernetes.io/service-proxy-name label)
       --keep-config                                               When restoring state, keeps containers' configuration in place
-      --kube-proxy-replacement string                             Enable kube-proxy replacement (default "false")
+      --kube-proxy-replacement                                    Enable kube-proxy replacement
       --kube-proxy-replacement-healthz-bind-address string        The IP address with port for kube-proxy replacement health check server to serve on (set to '0.0.0.0:10256' for all IPv4 interfaces and '[::]:10256' for all IPv6 interfaces). Set empty to disable.
       --kvstore string                                            Key-value store type
       --kvstore-lease-ttl duration                                Time-to-live for the KVstore lease. (default 15m0s)
@@ -301,7 +304,7 @@ cilium-agent [flags]
       --l2-announcements-lease-duration duration                  Duration of inactivity after which a new leader is selected (default 15s)
       --l2-announcements-renew-deadline duration                  Interval at which the leader renews a lease (default 5s)
       --l2-announcements-retry-period duration                    Timeout after a renew failure, before the next retry (default 2s)
-      --l2-pod-announcements-interface-pattern string             Regex matching interfaces used for sending gratuitous arp messages
+      --l2-pod-announcements-interface-pattern string             Regex matching interfaces used for sending gratuitous ARP and NDP messages
       --label-prefix-file string                                  Valid label prefixes file path
       --labels strings                                            List of label prefixes used to determine identity of an endpoint
       --lb-state-file string                                      Synchronize load-balancing state from the specified file
@@ -339,12 +342,14 @@ cilium-agent [flags]
       --policy-accounting                                         Enable policy accounting (default true)
       --policy-audit-mode                                         Enable policy audit (non-drop) mode
       --policy-cidr-match-mode strings                            The entities that can be selected by CIDR policy. Supported values: 'nodes'
-      --policy-default-local-cluster                              Control whether policy rules assume by default the local cluster if not explicitly selected
+      --policy-default-local-cluster                              Control whether policy rules assume by default the local cluster if not explicitly selected (default true)
       --policy-queue-size uint                                    Size of queue for policy-related events (default 100)
       --policy-secrets-namespace string                           PolicySecretsNamesapce is the namespace having secrets used in CNP and CCNP
       --policy-secrets-only-from-secrets-namespace                Configures the agent to only read policy Secrets from the policy-secrets-namespace
       --pprof                                                     Enable serving pprof debugging API
       --pprof-address string                                      Address that pprof listens on (default "localhost")
+      --pprof-block-profile-rate int                              Enable goroutine blocking profiling and set the rate of sampled events in nanoseconds (set to 1 to sample all events [warning: performance overhead])
+      --pprof-mutex-profile-fraction int                          Enable mutex contention profiling and set the fraction of sampled events (set to 1 to sample all events)
       --pprof-port uint16                                         Port that pprof listens on (default 6060)
       --preallocate-bpf-maps                                      Enable BPF map pre-allocation (default true)
       --prepend-iptables-chains                                   Prepend custom iptables chains instead of appending (default true)

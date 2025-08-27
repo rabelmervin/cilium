@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/util/workqueue"
 
 	operatorApi "github.com/cilium/cilium/api/v1/operator/server"
 	"github.com/cilium/cilium/cilium-dbg/cmd/troubleshoot"
@@ -41,10 +42,12 @@ import (
 	controllerruntime "github.com/cilium/cilium/operator/pkg/controller-runtime"
 	gatewayapi "github.com/cilium/cilium/operator/pkg/gateway-api"
 	"github.com/cilium/cilium/operator/pkg/ingress"
+	"github.com/cilium/cilium/operator/pkg/kvstore/locksweeper"
 	"github.com/cilium/cilium/operator/pkg/lbipam"
 	"github.com/cilium/cilium/operator/pkg/networkpolicy"
 	"github.com/cilium/cilium/operator/pkg/nodeipam"
 	"github.com/cilium/cilium/operator/pkg/secretsync"
+	"github.com/cilium/cilium/operator/pkg/workqueuemetrics"
 	operatorWatchers "github.com/cilium/cilium/operator/watchers"
 	clustercfgcell "github.com/cilium/cilium/pkg/clustermesh/clustercfg/cell"
 	"github.com/cilium/cilium/pkg/clustermesh/endpointslicesync"
@@ -236,6 +239,8 @@ var (
 			cmoperator.Cell,
 			endpointslicesync.Cell,
 			mcsapi.Cell,
+			locksweeper.Cell,
+			workqueuemetrics.Cell,
 			legacyCell,
 
 			// When running in kvstore mode, the start hook of the identity GC
@@ -448,18 +453,6 @@ func runOperator(log *slog.Logger, lc *LeaderLifecycle, clientset k8sClient.Clie
 		}
 	}
 
-	// We only support Operator in HA mode for Kubernetes Versions having support for
-	// LeasesResourceLock.
-	// See docs on capabilities.LeasesResourceLock for more context.
-	if !k8sversion.Capabilities().LeasesResourceLock {
-		log.Info("Support for coordination.k8s.io/v1 not present, fallback to non HA mode")
-
-		if err := lc.Start(log, leaderElectionCtx); err != nil {
-			logging.Fatal(log, "Failed to start leading", logfields.Error, err)
-		}
-		return
-	}
-
 	// Get hostname for identity name of the lease lock holder.
 	// We identify the leader of the operator cluster using hostname.
 	operatorID, err := os.Hostname()
@@ -538,35 +531,52 @@ var legacyCell = cell.Module(
 	metrics.Metric(NewUnmanagedPodsMetric),
 )
 
-func registerLegacyOnLeader(lc cell.Lifecycle, clientset k8sClient.Clientset, kvstoreClient kvstore.Client, resources operatorK8s.Resources, cfgClusterMeshPolicy cmtypes.PolicyConfig, metrics *UnmanagedPodsMetric, logger *slog.Logger) {
+type params struct {
+	cell.In
+	Lifecycle                cell.Lifecycle
+	Clientset                k8sClient.Clientset
+	KVStoreClient            kvstore.Client
+	Resources                operatorK8s.Resources
+	SvcResolver              *dial.ServiceResolver
+	CfgClusterMeshPolicy     cmtypes.PolicyConfig
+	Metrics                  *UnmanagedPodsMetric
+	MetricsRegistry          *metrics.Registry
+	Logger                   *slog.Logger
+	WorkQueueMetricsProvider workqueue.MetricsProvider
+}
+
+func registerLegacyOnLeader(p params) {
 	ctx, cancel := context.WithCancel(context.Background())
 	legacy := &legacyOnLeader{
-		ctx:                  ctx,
-		cancel:               cancel,
-		clientset:            clientset,
-		kvstoreClient:        kvstoreClient,
-		resources:            resources,
-		cfgClusterMeshPolicy: cfgClusterMeshPolicy,
-		metrics:              metrics,
-		logger:               logger,
+		ctx:                      ctx,
+		cancel:                   cancel,
+		clientset:                p.Clientset,
+		kvstoreClient:            p.KVStoreClient,
+		resources:                p.Resources,
+		cfgClusterMeshPolicy:     p.CfgClusterMeshPolicy,
+		workqueueMetricsProvider: p.WorkQueueMetricsProvider,
+		metrics:                  p.Metrics,
+		metricsRegistry:          p.MetricsRegistry,
+		logger:                   p.Logger,
 	}
-	lc.Append(cell.Hook{
+	p.Lifecycle.Append(cell.Hook{
 		OnStart: legacy.onStart,
 		OnStop:  legacy.onStop,
 	})
 }
 
 type legacyOnLeader struct {
-	ctx                  context.Context
-	cancel               context.CancelFunc
-	clientset            k8sClient.Clientset
-	kvstoreClient        kvstore.Client
-	wg                   sync.WaitGroup
-	resources            operatorK8s.Resources
-	cfgClusterMeshPolicy cmtypes.PolicyConfig
-	metrics              *UnmanagedPodsMetric
-
-	logger *slog.Logger
+	ctx                      context.Context
+	cancel                   context.CancelFunc
+	clientset                k8sClient.Clientset
+	kvstoreClient            kvstore.Client
+	wg                       sync.WaitGroup
+	resources                operatorK8s.Resources
+	cfgClusterMeshPolicy     cmtypes.PolicyConfig
+	metrics                  *UnmanagedPodsMetric
+	metricsRegistry          *metrics.Registry
+	workqueueMetricsProvider workqueue.MetricsProvider
+	logger                   *slog.Logger
 }
 
 func (legacy *legacyOnLeader) onStop(_ cell.HookContext) error {
@@ -578,9 +588,9 @@ func (legacy *legacyOnLeader) onStop(_ cell.HookContext) error {
 	return nil
 }
 
-// OnOperatorStartLeading is the function called once the operator starts leading
+// onStart is the function called once the operator starts leading
 // in HA mode.
-func (legacy *legacyOnLeader) onStart(_ cell.HookContext) error {
+func (legacy *legacyOnLeader) onStart(ctx cell.HookContext) error {
 	isLeader.Store(true)
 
 	// Restart kube-dns as soon as possible to parallelize re-initialization
@@ -590,9 +600,9 @@ func (legacy *legacyOnLeader) onStart(_ cell.HookContext) error {
 	// If this logic is modified, make sure the operator's clusterrole logic for
 	// pods/delete is also up-to-date.
 	if !legacy.clientset.IsEnabled() {
-		legacy.logger.Info("KubeDNS unmanaged pods controller disabled due to kubernetes support not enabled")
+		legacy.logger.InfoContext(ctx, "KubeDNS unmanaged pods controller disabled due to kubernetes support not enabled")
 	} else if option.Config.DisableCiliumEndpointCRD {
-		legacy.logger.Info(fmt.Sprintf("KubeDNS unmanaged pods controller disabled as %q option is set to 'disabled' in Cilium ConfigMap", option.DisableCiliumEndpointCRDName))
+		legacy.logger.InfoContext(ctx, fmt.Sprintf("KubeDNS unmanaged pods controller disabled as %q option is set to 'disabled' in Cilium ConfigMap", option.DisableCiliumEndpointCRDName))
 	} else if operatorOption.Config.UnmanagedPodWatcherInterval != 0 {
 		legacy.wg.Add(1)
 		go func() {
@@ -606,7 +616,7 @@ func (legacy *legacyOnLeader) onStart(_ cell.HookContext) error {
 		withKVStore bool
 	)
 
-	legacy.logger.Info(
+	legacy.logger.InfoContext(ctx,
 		"Initializing IPAM",
 		logfields.Mode, option.Config.IPAM,
 	)
@@ -623,7 +633,7 @@ func (legacy *legacyOnLeader) onStart(_ cell.HookContext) error {
 			logging.Fatal(legacy.logger, fmt.Sprintf("%s allocator is not supported by this version of %s", ipamMode, binaryName))
 		}
 
-		if err := alloc.Init(legacy.ctx, legacy.logger); err != nil {
+		if err := alloc.Init(legacy.ctx, legacy.logger, legacy.metricsRegistry); err != nil {
 			logging.Fatal(legacy.logger, fmt.Sprintf("Unable to init %s allocator", ipamMode), logfields.Error, err)
 		}
 
@@ -634,7 +644,7 @@ func (legacy *legacyOnLeader) onStart(_ cell.HookContext) error {
 				watcherLogger)
 		}
 
-		nm, err := alloc.Start(legacy.ctx, &ciliumNodeUpdateImplementation{legacy.clientset})
+		nm, err := alloc.Start(legacy.ctx, &ciliumNodeUpdateImplementation{legacy.clientset}, legacy.metricsRegistry)
 		if err != nil {
 			logging.Fatal(legacy.logger, fmt.Sprintf("Unable to start %s allocator", ipamMode), logfields.Error, err)
 		}
@@ -642,17 +652,13 @@ func (legacy *legacyOnLeader) onStart(_ cell.HookContext) error {
 		nodeManager = nm
 	}
 
-	if legacy.kvstoreClient.IsEnabled() {
-		if legacy.clientset.IsEnabled() && operatorOption.Config.SyncK8sNodes {
-			withKVStore = true
-		}
-
-		startKvstoreWatchdog(legacy.logger, legacy.kvstoreClient)
+	if legacy.kvstoreClient.IsEnabled() && legacy.clientset.IsEnabled() && operatorOption.Config.SyncK8sNodes {
+		withKVStore = true
 	}
 
 	if legacy.clientset.IsEnabled() &&
 		(operatorOption.Config.RemoveCiliumNodeTaints || operatorOption.Config.SetCiliumIsUpCondition) {
-		legacy.logger.Info(
+		legacy.logger.InfoContext(ctx,
 			"Managing Cilium Node Taints or Setting Cilium Is Up Condition for Kubernetes Nodes",
 			logfields.K8sNamespace, operatorOption.Config.CiliumK8sNamespace,
 			logfields.LabelSelectorFlagOption, operatorOption.Config.CiliumPodLabels,
@@ -665,7 +671,7 @@ func (legacy *legacyOnLeader) onStart(_ cell.HookContext) error {
 			watcherLogger)
 	}
 
-	ciliumNodeSynchronizer := newCiliumNodeSynchronizer(legacy.logger, legacy.clientset, legacy.kvstoreClient, nodeManager, withKVStore)
+	ciliumNodeSynchronizer := newCiliumNodeSynchronizer(legacy.logger, legacy.clientset, legacy.kvstoreClient, nodeManager, withKVStore, legacy.workqueueMetricsProvider)
 
 	if legacy.clientset.IsEnabled() {
 		// ciliumNodeSynchronizer uses operatorWatchers.PodStore for IPAM surge
@@ -731,7 +737,7 @@ func (legacy *legacyOnLeader) onStart(_ cell.HookContext) error {
 		}
 	}
 
-	legacy.logger.Info("Initialization complete")
+	legacy.logger.InfoContext(ctx, "Initialization complete")
 	return nil
 }
 

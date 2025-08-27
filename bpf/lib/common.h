@@ -86,17 +86,23 @@ union v4addr {
 };
 
 union v6addr {
+	__u8 addr[16];
 	struct {
 		__u32 p1;
 		__u32 p2;
 		__u32 p3;
 		__u32 p4;
-	};
+	} p;
+#define p1 p.p1
+#define p2 p.p2
+#define p3 p.p3
+#define p4 p.p4
 	struct {
 		__u64 d1;
 		__u64 d2;
-	};
-	__u8 addr[16];
+	} d;
+#define d1 d.d1
+#define d2 d.d2
 } __packed;
 
 static __always_inline bool validate_ethertype_l2_off(struct __ctx_buff *ctx,
@@ -208,6 +214,13 @@ static __always_inline __u32 get_id_from_tunnel_id(__u32 tunnel_id, __u16 proto 
  */
 #define revalidate_data(ctx, data, data_end, ip)			\
 	revalidate_data_l3_off(ctx, data, data_end, ip, ETH_HLEN)
+
+/* arp is different from the above as we also want to pull in the payload.
+ * Returns true if 'ctx' is long enough to be valid ARP packet, false otherwise.
+ */
+#define revalidate_data_arp_pull(ctx, data, data_end, arp)		\
+	__revalidate_data_pull(ctx, data, data_end, (void **)arp,	\
+		ETH_HLEN + sizeof(struct arphdr), sizeof(**arp), true)
 
 #define ENDPOINT_KEY_IPV4 1
 #define ENDPOINT_KEY_IPV6 2

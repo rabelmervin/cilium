@@ -143,7 +143,7 @@
    * - :spelling:ignore:`authentication.mutual.spire.install.initImage`
      - init container image of SPIRE agent and server
      - object
-     - ``{"digest":"sha256:f85340bf132ae937d2c2a763b8335c9bab35d6e8293f70f606b9c6178d84f42b","override":null,"pullPolicy":"Always","repository":"docker.io/library/busybox","tag":"1.37.0","useDigest":true}``
+     - ``{"digest":"sha256:ab33eacc8251e3807b85bb6dba570e4698c3998eca6f0fc2ccb60575a563ea74","override":null,"pullPolicy":"Always","repository":"docker.io/library/busybox","tag":"1.37.0","useDigest":true}``
    * - :spelling:ignore:`authentication.mutual.spire.install.namespace`
      - SPIRE namespace to install into
      - string
@@ -357,7 +357,7 @@
      - object
      - ``{"default":{"burstLimit":null,"rateLimit":null},"drop":{"enabled":true},"policyVerdict":{"enabled":true},"trace":{"enabled":true}}``
    * - :spelling:ignore:`bpf.events.default`
-     - Default settings for all types of events except dbg and pcap.
+     - Default settings for all types of events except dbg.
      - object
      - ``{"burstLimit":null,"rateLimit":null}``
    * - :spelling:ignore:`bpf.events.default.burstLimit`
@@ -440,6 +440,10 @@
      - Configure the maximum number of entries in endpoint policy map (per endpoint). @schema type: [null, integer] @schema
      - int
      - ``16384``
+   * - :spelling:ignore:`bpf.policyMapPressureMetricsThreshold`
+     - Configure threshold for emitting pressure metrics of policy maps. @schema type: [null, number] @schema
+     - float64
+     - ``0.1``
    * - :spelling:ignore:`bpf.policyStatsMapMax`
      - Configure the maximum number of entries in global policy stats map. @schema type: [null, integer] @schema
      - int
@@ -909,7 +913,7 @@
      - object
      - ``{"clusters":[],"domain":"mesh.cilium.io","enabled":false}``
    * - :spelling:ignore:`clustermesh.config.clusters`
-     - List of clusters to be peered in the mesh.
+     - Clusters to be peered in the mesh. @schema type: [object, array] @schema
      - list
      - ``[]``
    * - :spelling:ignore:`clustermesh.config.domain`
@@ -925,17 +929,93 @@
      - bool
      - ``false``
    * - :spelling:ignore:`clustermesh.enableMCSAPISupport`
-     - Enable Multi-Cluster Services API support
+     - Enable Multi-Cluster Services API support (deprecated; use clustermesh.mcsapi.enabled)
      - bool
      - ``false``
    * - :spelling:ignore:`clustermesh.maxConnectedClusters`
      - The maximum number of clusters to support in a ClusterMesh. This value cannot be changed on running clusters, and all clusters in a ClusterMesh must be configured with the same value. Values > 255 will decrease the maximum allocatable cluster-local identities. Supported values are 255 and 511.
      - int
      - ``255``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.affinity`
+     - Affinity for coredns-mcsapi-autoconfig
+     - object
+     - ``{}``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.annotations`
+     - Annotations to be added to the coredns-mcsapi-autoconfig Job
+     - object
+     - ``{}``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.coredns.clusterDomain`
+     - The cluster domain for the cluster CoreDNS service
+     - string
+     - ``"cluster.local"``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.coredns.clustersetDomain`
+     - The clusterset domain for the cluster CoreDNS service
+     - string
+     - ``"clusterset.local"``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.coredns.configMapName`
+     - The ConfigMap name for the cluster CoreDNS service
+     - string
+     - ``"coredns"``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.coredns.deploymentName`
+     - The Deployment for the cluster CoreDNS service
+     - string
+     - ``"coredns"``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.coredns.namespace`
+     - The namespace for the cluster CoreDNS service
+     - string
+     - ``"kube-system"``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.coredns.serviceAccountName`
+     - The Service Account name for the cluster CoreDNS service
+     - string
+     - ``"coredns"``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.enabled`
+     - Enable auto-configuration of CoreDNS for Multi-Cluster Services API.    CoreDNS MUST be at least in version v1.12.2 to run this.
+     - bool
+     - ``false``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.extraArgs`
+     - Additional arguments to ``clustermesh-apiserver coredns-mcsapi-auto-configure``.
+     - list
+     - ``[]``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.extraVolumeMounts`
+     - Additional coredns-mcsapi-autoconfig volumeMounts.
+     - list
+     - ``[]``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.extraVolumes`
+     - Additional coredns-mcsapi-autoconfig volumes.
+     - list
+     - ``[]``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.nodeSelector`
+     - Node selector for coredns-mcsapi-autoconfig ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+     - object
+     - ``{}``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.podLabels`
+     - Labels to be added to coredns-mcsapi-autoconfig pods
+     - object
+     - ``{}``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.priorityClassName`
+     - Priority class for coredns-mcsapi-autoconfig ref: https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/#priorityclass
+     - string
+     - ``""``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.resources`
+     - Resource limits for coredns-mcsapi-autoconfig ref: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers
+     - object
+     - ``{}``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.tolerations`
+     - Node tolerations for pod assignment on nodes with taints ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
+     - list
+     - ``[]``
+   * - :spelling:ignore:`clustermesh.mcsapi.corednsAutoConfigure.ttlSecondsAfterFinished`
+     - Seconds after which the completed job pod will be deleted
+     - int
+     - ``1800``
+   * - :spelling:ignore:`clustermesh.mcsapi.enabled`
+     - Enable Multi-Cluster Services API support
+     - bool
+     - ``false``
    * - :spelling:ignore:`clustermesh.policyDefaultLocalCluster`
      - Control whether policy rules assume by default the local cluster if not explicitly selected
      - bool
-     - ``false``
+     - ``true``
    * - :spelling:ignore:`clustermesh.useAPIServer`
      - Deploy clustermesh-apiserver for clustermesh
      - bool
@@ -1371,7 +1451,7 @@
    * - :spelling:ignore:`envoy.image`
      - Envoy container image.
      - object
-     - ``{"digest":"sha256:892cab92ffaf8499be90bd227bf07181e4b460ecd97750032ea7e91710a8acce","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.34.1-1750869463-42c7e8cf0f93ea19c9cb7e4d0ad2a339b3f81ad2","useDigest":true}``
+     - ``{"digest":"sha256:be8de2fd5fee672b4371494dfe742840a8b7e935806013424c367dd533b5727a","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.35.1-1755991022-2b90dbb2c668eba4aaf54b18e85862e51b6ea06e","useDigest":true}``
    * - :spelling:ignore:`envoy.initialFetchTimeoutSeconds`
      - Time in seconds after which the initial fetch on an xDS stream is considered timed out
      - int
@@ -1980,10 +2060,18 @@
      - Configure pprof listen address for hubble-relay
      - string
      - ``"localhost"``
+   * - :spelling:ignore:`hubble.relay.pprof.blockProfileRate`
+     - Enable goroutine blocking profiling for hubble-relay and set the rate of sampled events in nanoseconds (set to 1 to sample all events [warning: performance overhead])
+     - int
+     - ``0``
    * - :spelling:ignore:`hubble.relay.pprof.enabled`
      - Enable pprof for hubble-relay
      - bool
      - ``false``
+   * - :spelling:ignore:`hubble.relay.pprof.mutexProfileFraction`
+     - Enable mutex contention profiling for hubble-relay and set the fraction of sampled events (set to 1 to sample all events)
+     - int
+     - ``0``
    * - :spelling:ignore:`hubble.relay.pprof.port`
      - Configure pprof listen port for hubble-relay
      - int
@@ -2855,7 +2943,7 @@
    * - :spelling:ignore:`nodeinit.image`
      - node-init image.
      - object
-     - ``{"digest":"sha256:8d7b41c4ca45860254b3c19e20210462ef89479bb6331d6760c4e609d651b29c","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/startup-script","tag":"c54c7edeab7fde4da68e59acd319ab24af242c3f","useDigest":true}``
+     - ``{"digest":"sha256:0c91245afb3a4ff78b5cc8c09226806e94a9a10eb0adb74a85e0eeed2a5cae8c","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/startup-script","tag":"1755531540-60ee83e","useDigest":true}``
    * - :spelling:ignore:`nodeinit.nodeSelector`
      - Node labels for nodeinit pod assignment ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
      - object
@@ -3004,10 +3092,18 @@
      - Configure pprof listen address for cilium-operator
      - string
      - ``"localhost"``
+   * - :spelling:ignore:`operator.pprof.blockProfileRate`
+     - Enable goroutine blocking profiling for cilium-operator and set the rate of sampled events in nanoseconds (set to 1 to sample all events [warning: performance overhead])
+     - int
+     - ``0``
    * - :spelling:ignore:`operator.pprof.enabled`
      - Enable pprof for cilium-operator
      - bool
      - ``false``
+   * - :spelling:ignore:`operator.pprof.mutexProfileFraction`
+     - Enable mutex contention profiling for cilium-operator and set the fraction of sampled events (set to 1 to sample all events)
+     - int
+     - ``0``
    * - :spelling:ignore:`operator.pprof.port`
      - Configure pprof listen port for cilium-operator
      - int
@@ -3085,9 +3181,9 @@
      - bool
      - ``false``
    * - :spelling:ignore:`operator.tolerations`
-     - Node tolerations for cilium-operator scheduling to nodes with taints ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
+     - Node tolerations for cilium-operator scheduling to nodes with taints ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/ Toleration for agentNotReadyTaintKey taint is always added to cilium-operator pods. @schema type: [null, array] @schema
      - list
-     - ``[{"operator":"Exists"}]``
+     - ``[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists"},{"key":"node-role.kubernetes.io/master","operator":"Exists"},{"key":"node.kubernetes.io/not-ready","operator":"Exists"},{"key":"node.cloudprovider.kubernetes.io/uninitialized","operator":"Exists"}]``
    * - :spelling:ignore:`operator.topologySpreadConstraints`
      - Pod topology spread constraints for cilium-operator
      - list
@@ -3100,6 +3196,10 @@
      - Restart any pod that are not managed by Cilium.
      - bool
      - ``true``
+   * - :spelling:ignore:`operator.unmanagedPodWatcher.selector`
+     - Selector for pods that should be restarted when not managed by Cilium. If not set, defaults to built-in selector "k8s-app=kube-dns". Set to empty string to select all pods. @schema type: [null, string] @schema
+     - string
+     - ``nil``
    * - :spelling:ignore:`operator.updateStrategy`
      - cilium-operator update strategy
      - object
@@ -3119,7 +3219,7 @@
    * - :spelling:ignore:`podSecurityContext`
      - Security Context for cilium-agent pods.
      - object
-     - ``{"appArmorProfile":{"type":"Unconfined"},"seccompProfile":{"type":"RuntimeDefault"}}``
+     - ``{"appArmorProfile":{"type":"Unconfined"},"seccompProfile":{"type":"Unconfined"}}``
    * - :spelling:ignore:`podSecurityContext.appArmorProfile`
      - AppArmorProfile options for the ``cilium-agent`` and init containers
      - object
@@ -3136,10 +3236,18 @@
      - Configure pprof listen address for cilium-agent
      - string
      - ``"localhost"``
+   * - :spelling:ignore:`pprof.blockProfileRate`
+     - Enable goroutine blocking profiling for cilium-agent and set the rate of sampled events in nanoseconds (set to 1 to sample all events [warning: performance overhead])
+     - int
+     - ``0``
    * - :spelling:ignore:`pprof.enabled`
      - Enable pprof for cilium-agent
      - bool
      - ``false``
+   * - :spelling:ignore:`pprof.mutexProfileFraction`
+     - Enable mutex contention profiling for cilium-agent and set the fraction of sampled events (set to 1 to sample all events)
+     - int
+     - ``0``
    * - :spelling:ignore:`pprof.port`
      - Configure pprof listen port for cilium-agent
      - int
@@ -3159,7 +3267,7 @@
    * - :spelling:ignore:`preflight.envoy.image`
      - Envoy pre-flight image.
      - object
-     - ``{"digest":"sha256:892cab92ffaf8499be90bd227bf07181e4b460ecd97750032ea7e91710a8acce","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.34.1-1750869463-42c7e8cf0f93ea19c9cb7e4d0ad2a339b3f81ad2","useDigest":true}``
+     - ``{"digest":"sha256:be8de2fd5fee672b4371494dfe742840a8b7e935806013424c367dd533b5727a","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.35.1-1755991022-2b90dbb2c668eba4aaf54b18e85862e51b6ea06e","useDigest":true}``
    * - :spelling:ignore:`preflight.extraEnv`
      - Additional preflight environment variables.
      - list
@@ -3384,6 +3492,10 @@
      - Clustermeshcertgen is used if clustermesh.apiserver.tls.auto.method=cronJob
      - object
      - ``{"annotations":{},"automount":true,"create":true,"name":"clustermesh-apiserver-generate-certs"}``
+   * - :spelling:ignore:`serviceAccounts.corednsMCSAPI`
+     - CorednsMCSAPI is used if clustermesh.mcsapi.corednsAutoConfigure.enabled=true
+     - object
+     - ``{"annotations":{},"automount":true,"create":true,"name":"cilium-coredns-mcsapi-autoconfig"}``
    * - :spelling:ignore:`serviceAccounts.hubblecertgen`
      - Hubblecertgen is used if hubble.tls.auto.method=cronJob
      - object
@@ -3416,10 +3528,6 @@
      - interval between checks of the startup probe
      - int
      - ``2``
-   * - :spelling:ignore:`svcSourceRangeCheck`
-     - Enable check of service source ranges (currently, only for LoadBalancer).
-     - bool
-     - ``true``
    * - :spelling:ignore:`synchronizeK8sNodes`
      - Synchronize Kubernetes nodes to kvstore and perform CNP GC.
      - bool

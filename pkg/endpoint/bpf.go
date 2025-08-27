@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -582,17 +581,14 @@ func (e *Endpoint) policyMapSync(policyMapDump policy.MapStateMap, stats *regene
 func (e *Endpoint) realizeBPFState(regenContext *regenerationContext) (err error) {
 	stats := &regenContext.Stats
 	datapathRegenCtxt := regenContext.datapathRegenerationContext
-	debugEnabled := e.getLogger().Enabled(context.Background(), slog.LevelDebug)
 
-	if debugEnabled {
-		e.getLogger().Debug(
-			"Preparing to compile BPF",
-			fieldRegenLevel, datapathRegenCtxt.regenerationLevel,
-		)
-	}
+	e.getLogger().Debug(
+		"Preparing to compile BPF",
+		fieldRegenLevel, datapathRegenCtxt.regenerationLevel,
+	)
 
 	if datapathRegenCtxt.regenerationLevel > regeneration.RegenerateWithoutDatapath {
-		if debugEnabled {
+		if e.Options.IsEnabled(option.Debug) {
 			debugFunc := func(format string, args ...interface{}) {
 				e.getLogger().Debug(fmt.Sprintf(format, args))
 			}
@@ -619,7 +615,7 @@ func (e *Endpoint) realizeBPFState(regenContext *regenerationContext) (err error
 
 		e.getLogger().Info("Reloaded endpoint BPF program")
 		e.bpfHeaderfileHash = datapathRegenCtxt.bpfHeaderfilesHash
-	} else if debugEnabled {
+	} else {
 		e.getLogger().Debug(
 			"BPF header file unchanged, skipping BPF compilation and installation",
 			logfields.BPFHeaderfileHash, datapathRegenCtxt.bpfHeaderfilesHash,
@@ -643,7 +639,7 @@ func (e *Endpoint) runPreCompilationSteps(regenContext *regenerationContext) (pr
 	// computations fail.
 	defer func() {
 		e.unconditionalLock()
-		e.InitialPolicyComputedLocked()
+		e.initialPolicyComputedLocked()
 		e.unlock()
 	}()
 
@@ -675,7 +671,7 @@ func (e *Endpoint) runPreCompilationSteps(regenContext *regenerationContext) (pr
 
 	// Once the policy has been calculated, we can update the standalone dns proxy as well.
 	// We need to send the snapshot of the policyRules to SDP.
-	if !e.isProperty(PropertyFakeEndpoint) && !e.IsProxyDisabled() {
+	if !e.isProperty(PropertyFakeEndpoint) && !e.IsProxyDisabled() && e.proxy.IsSDPEnabled() {
 		repo := e.policyRepo
 		e.getLogger().Debug("Updating standalone DNS proxy with policy rules")
 		policyRules := repo.GetPolicySnapshot()
@@ -754,7 +750,7 @@ func (e *Endpoint) runPreCompilationSteps(regenContext *regenerationContext) (pr
 		}
 
 		// Signal computation of the initial Envoy policy if not done yet
-		e.InitialPolicyComputedLocked()
+		e.initialPolicyComputedLocked()
 	}
 
 	currentDir := datapathRegenCtxt.currentDir
@@ -805,8 +801,36 @@ func (e *Endpoint) runPreCompilationSteps(regenContext *regenerationContext) (pr
 			if err != nil {
 				return fmt.Errorf("policymap synchronization failed: %w", err)
 			}
+			datapathRegenCtxt.policyMapSyncDone = true
+		} else {
+			// There is an edge case where on startup, the policy map for an endpoint
+			// is not empty (policyMapDump > 0) but no policy has been realized yet (realizedPolicy is empty).
+			// Default policy may exist in map to allow all ingress/egress traffic, something like this:
+			// --------------------------------------------------------------------------------------------------------------------------
+			// POLICY   DIRECTION   LABELS (source:key[=value])   PORT/PROTO   PROXY PORT   AUTH TYPE   BYTES   PACKETS   PREFIX
+			// Allow    Ingress     ANY                           ANY          NONE         disabled    2426    29        0
+			// Allow    Ingress     reserved:host                 ANY          NONE         disabled    0       0         0
+			// Allow    Egress      ANY                           ANY          NONE         disabled    30639   165       0
+			// ----------------------------------------------------------------------------------------------------------------------------
+			// If the code has reached here, it means:
+			// 1. The endpoint has a policy map that is not empty (default policy exists)
+			// 2. No policies has been realized (realized policy is empty)
+			// 3. New policies need to be applied for this endpoint (hence desiredPolicy != realizedPolicy)
+			// GH-37724: https://github.com/cilium/cilium/issues/37724
+			e.getLogger().Debug(
+				"Policy map is not empty, but no policy has been realized yet, setting policyMapSyncDone to false",
+			)
+			// Ensure that e.realizedPolicy actually represents the
+			// current policy map state in case rollback is
+			// necessary, so we don't try to "roll back" to an empty
+			// map and delete all the entries, even momentarily.
+			// This may be the case if the agent just restarted,
+			// for example. See GH-38998.
+			e.realizedPolicy.CopyMapStateFrom(datapathRegenCtxt.policyMapDump)
+			// Not strictly required to set as false, but it is a good idea to absolutely
+			// ensure that the policy map is in sync with the desired policy.
+			datapathRegenCtxt.policyMapSyncDone = false
 		}
-		datapathRegenCtxt.policyMapSyncDone = true
 	}
 
 	// sync policy map for fake endpoints, bpf compilation will be skipped for them.
@@ -856,14 +880,6 @@ func (e *Endpoint) finalizeProxyState(regenContext *regenerationContext, err err
 		}
 		e.getLogger().Debug("Finished reverting endpoint changes after BPF regeneration failed")
 	}
-}
-
-// InitMap creates the policy map in the kernel.
-func (e *Endpoint) InitMap() error {
-	if e.policyMapFactory == nil {
-		return fmt.Errorf("endpoint has nil policyMapFactory")
-	}
-	return e.policyMapFactory.CreateEndpoint(e.ID)
 }
 
 // deleteMaps deletes the endpoint's entry from the global

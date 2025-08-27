@@ -12,6 +12,10 @@ type BPFXDP struct {
 	// MTU of the device the bpf program is attached to (default: MTU set in
 	// node_config.h by agent).
 	DeviceMTU uint16 `config:"device_mtu"`
+	// Pass traffic with extended IP protocols.
+	EnableExtendedIPProtocols bool `config:"enable_extended_ip_protocols"`
+	// Masquerade traffic to remote nodes.
+	EnableRemoteNodeMasquerade bool `config:"enable_remote_node_masquerade"`
 	// Ifindex of the interface the bpf program is attached to.
 	InterfaceIfindex uint32 `config:"interface_ifindex"`
 	// MAC address of the interface the bpf program is attached to.
@@ -27,7 +31,8 @@ type BPFXDP struct {
 }
 
 func NewBPFXDP(node Node) *BPFXDP {
-	return &BPFXDP{0x5dc, 0x0, [8]byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0}, [4]byte{0x0, 0x0, 0x0, 0x0},
+	return &BPFXDP{0x5dc, false, false, 0x0, [8]byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
+		[4]byte{0x0, 0x0, 0x0, 0x0},
 		[16]byte{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
 		false, node}
 }

@@ -21,23 +21,62 @@ import (
 	"github.com/cilium/statedb/index"
 )
 
-// NewTable creates a new table with given name and indexes.
-// Can fail if the indexes or the name are malformed.
+// NewTable creates a new table with given name and indexes, and registers it
+// with the database. Can fail if the indexes or the name are malformed, or a
+// table with the same name is already registered.
 // The name must match regex "^[a-z][a-z0-9_\\-]{0,30}$".
 //
 // To provide access to the table via Hive:
 //
 //	cell.Provide(
 //		// Provide statedb.RWTable[*MyObject]. Often only provided to the module with ProvidePrivate.
-//		statedb.NewTable[*MyObject]("my-objects", MyObjectIDIndex, MyObjectNameIndex),
+//		func(db *statedb.DB) (statedb.RWTable[*MyObject], error) {
+//			return NewTable(db, "my-objects", MyObjectIDIndex, MyObjectNameIndex)
+//		},
 //		// Provide the read-only statedb.Table[*MyObject].
 //		statedb.RWTable[*MyObject].ToTable,
 //	)
-func NewTable[Obj any](
+func NewTable[Obj TableWritable](
+	db *DB,
 	tableName TableName,
 	primaryIndexer Indexer[Obj],
 	secondaryIndexers ...Indexer[Obj],
 ) (RWTable[Obj], error) {
+	var obj Obj
+	return NewTableAny[Obj](
+		db,
+		tableName,
+		obj.TableHeader,
+		Obj.TableRow,
+		primaryIndexer,
+		secondaryIndexers...,
+	)
+}
+
+// MustNewTable creates a new table with given name and indexes, and registers
+// it with the database. Panics if indexes are malformed, or a table with the
+// same name is already registered.
+func MustNewTable[Obj TableWritable](
+	db *DB,
+	tableName TableName,
+	primaryIndexer Indexer[Obj],
+	secondaryIndexers ...Indexer[Obj]) RWTable[Obj] {
+	t, err := NewTable(db, tableName, primaryIndexer, secondaryIndexers...)
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
+// NewTableAny creates a new table for any type object with the given table
+// header and row functions.
+func NewTableAny[Obj any](
+	db *DB,
+	tableName TableName,
+	tableHeader func() []string,
+	tableRow func(Obj) []string,
+	primaryIndexer Indexer[Obj],
+	secondaryIndexers ...Indexer[Obj]) (RWTable[Obj], error) {
 	if err := validateTableName(tableName); err != nil {
 		return nil, err
 	}
@@ -61,6 +100,8 @@ func NewTable[Obj any](
 		secondaryAnyIndexers: make(map[string]anyIndexer, len(secondaryIndexers)),
 		indexPositions:       make(map[string]int),
 		pos:                  -1,
+		tableHeaderFunc:      tableHeader,
+		tableRowFunc:         tableRow,
 	}
 
 	table.indexPositions[primaryIndexer.indexName()] = PrimaryIndexPos
@@ -99,16 +140,20 @@ func NewTable[Obj any](
 			return nil, tableError(tableName, fmt.Errorf("index %q: %w", name, ErrReservedPrefix))
 		}
 	}
-	return table, nil
+	return table, db.registerTable(table)
 }
 
-// MustNewTable creates a new table with given name and indexes.
-// Panics if indexes are malformed.
-func MustNewTable[Obj any](
+// MustNewTableAny creates a new table with given name and indexes, and registers
+// it with the database. Panics if indexes are malformed, or a table with the
+// same name is already registered.
+func MustNewTableAny[Obj any](
+	db *DB,
 	tableName TableName,
+	tableHeader func() []string,
+	tableRow func(Obj) []string,
 	primaryIndexer Indexer[Obj],
 	secondaryIndexers ...Indexer[Obj]) RWTable[Obj] {
-	t, err := NewTable(tableName, primaryIndexer, secondaryIndexers...)
+	t, err := NewTableAny(db, tableName, tableHeader, tableRow, primaryIndexer, secondaryIndexers...)
 	if err != nil {
 		panic(err)
 	}
@@ -133,6 +178,8 @@ type genTable[Obj any] struct {
 	secondaryAnyIndexers map[string]anyIndexer
 	indexPositions       map[string]int
 	lastWriteTxn         atomic.Pointer[writeTxn]
+	tableHeaderFunc      func() []string
+	tableRowFunc         func(Obj) []string
 }
 
 func (t *genTable[Obj]) acquired(txn *writeTxn) {
@@ -147,7 +194,12 @@ func (t *genTable[Obj]) tableEntry() tableEntry {
 	var entry tableEntry
 	entry.meta = t
 	entry.deleteTrackers = part.New[anyDeleteTracker]()
+
+	// A new table is initialized, as no initializers are registered.
+	entry.initialized = true
 	entry.initWatchChan = make(chan struct{})
+	close(entry.initWatchChan)
+
 	entry.indexes = make([]indexEntry, len(t.indexPositions))
 	entry.indexes[t.indexPositions[t.primaryIndexer.indexName()]] = indexEntry{part.New[object](), nil, nil, true}
 
@@ -223,10 +275,7 @@ func (t *genTable[Obj]) ToTable() Table[Obj] {
 
 func (t *genTable[Obj]) Initialized(txn ReadTxn) (bool, <-chan struct{}) {
 	table := txn.getTableEntry(t)
-	if len(table.pendingInitializers) == 0 {
-		return true, closedWatchChannel
-	}
-	return false, table.initWatchChan
+	return len(table.pendingInitializers) == 0, table.initWatchChan
 }
 
 func (t *genTable[Obj]) PendingInitializers(txn ReadTxn) []string {
@@ -239,6 +288,12 @@ func (t *genTable[Obj]) RegisterInitializer(txn WriteTxn, name string) func(Writ
 		if slices.Contains(table.pendingInitializers, name) {
 			panic(fmt.Sprintf("RegisterInitializer: %q already registered", name))
 		}
+
+		if len(table.pendingInitializers) == 0 {
+			table.initialized = false
+			table.initWatchChan = make(chan struct{})
+		}
+
 		table.pendingInitializers =
 			append(slices.Clone(table.pendingInitializers), name)
 		var once sync.Once
@@ -249,6 +304,8 @@ func (t *genTable[Obj]) RegisterInitializer(txn WriteTxn, name string) func(Writ
 						slices.Clone(table.pendingInitializers),
 						func(n string) bool { return n == name },
 					)
+				} else {
+					panic(fmt.Sprintf("RegisterInitializer/MarkDone: Table %q not locked for writing", t.table))
 				}
 			})
 		}
@@ -522,9 +579,17 @@ func (t *genTable[Obj]) sortableMutex() internal.SortableMutex {
 	return t.smu
 }
 
-func (t *genTable[Obj]) proto() any {
+func (t *genTable[Obj]) typeName() string {
 	var zero Obj
-	return zero
+	return fmt.Sprintf("%T", zero)
+}
+
+func (t *genTable[Obj]) tableHeader() []string {
+	return t.tableHeaderFunc()
+}
+
+func (t *genTable[Obj]) tableRowAny(obj any) []string {
+	return t.tableRowFunc(obj.(Obj))
 }
 
 func (t *genTable[Obj]) unmarshalYAML(data []byte) (any, error) {

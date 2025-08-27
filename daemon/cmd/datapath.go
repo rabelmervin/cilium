@@ -25,7 +25,6 @@ import (
 	"github.com/cilium/cilium/pkg/maps/encrypt"
 	"github.com/cilium/cilium/pkg/maps/fragmap"
 	ipcachemap "github.com/cilium/cilium/pkg/maps/ipcache"
-	"github.com/cilium/cilium/pkg/maps/ipmasq"
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/maps/metricsmap"
 	"github.com/cilium/cilium/pkg/maps/nat"
@@ -127,6 +126,27 @@ func (e *EndpointMapManager) RemoveMapPath(path string) {
 	}
 }
 
+// ListMapsDir gives names of files (or subdirectories) found in the specified path.
+func (e *EndpointMapManager) ListMapsDir(path string) []string {
+	var maps []string
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		e.logger.Warn(
+			"Error while listing maps dir",
+			logfields.Path, path,
+			logfields.Error, err,
+		)
+		return maps
+	}
+
+	for _, e := range entries {
+		maps = append(maps, e.Name())
+	}
+
+	return maps
+}
+
 // initMaps opens all BPF maps (and creates them if they do not exist). This
 // must be done *before* any operations which read BPF maps, especially
 // restoring endpoints and services.
@@ -170,10 +190,6 @@ func (d *Daemon) initMaps() error {
 		}
 	}
 
-	for _, ep := range d.endpointManager.GetEndpoints() {
-		ep.InitMap()
-	}
-
 	for _, m := range ctmap.GlobalMaps(option.Config.EnableIPv4,
 		option.Config.EnableIPv6) {
 		if err := m.Create(); err != nil {
@@ -214,19 +230,6 @@ func (d *Daemon) initMaps() error {
 	if option.Config.EnableIPv6FragmentsTracking {
 		if err := fragmap.InitMap6(d.metricsRegistry, option.Config.FragmentsMapEntries); err != nil {
 			return fmt.Errorf("initializing fragments map: %w", err)
-		}
-	}
-
-	if option.Config.EnableIPMasqAgent {
-		if option.Config.EnableIPv4Masquerade {
-			if err := ipmasq.IPMasq4Map(d.metricsRegistry).OpenOrCreate(); err != nil {
-				return fmt.Errorf("initializing IPv4 masquerading map: %w", err)
-			}
-		}
-		if option.Config.EnableIPv6Masquerade {
-			if err := ipmasq.IPMasq6Map(d.metricsRegistry).OpenOrCreate(); err != nil {
-				return fmt.Errorf("initializing IPv6 masquerading map: %w", err)
-			}
 		}
 	}
 

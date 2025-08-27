@@ -3,7 +3,7 @@ run:
   modules-download-mode: readonly
   issues-exit-code: 1
   tests: true
-  timeout: 30m
+  timeout: 60m
 linters:
   default: none
   enable:
@@ -60,6 +60,10 @@ linters:
               recommendations:
                 - github.com/cilium/dns
               reason: use the cilium fork directly to avoid replace directives in go.mod, see https://github.com/cilium/cilium/pull/27582
+          - go.uber.org/goleak:
+              recommendations:
+                - github.com/cilium/cilium/pkg/testutils
+              reason: Use testutils.Goleak* instead for the shared default options.
           - gopkg.in/check.v1:
               recommendations:
                 - testing
@@ -103,6 +107,10 @@ linters:
               recommendations:
                 - k8s.io/utils/ptr
               reason: k8s.io/utils/pointer is deprecated, see https://pkg.go.dev/k8s.io/utils/pointer
+          - github.com/google/gopacket:
+              recommendations:
+                - github.com/gopacket/gopacket
+              reason: This package is better supported and gets regular updates, see https://github.com/cilium/cilium/issues/34536
     gosec:
       includes:
         - G402

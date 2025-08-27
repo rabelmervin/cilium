@@ -1,11 +1,13 @@
+# check=error=true
+
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:f51ffb467692a59696b144dfe2f1ddeae1bb6bca@sha256:32f5f098d74db46c9d0405e25236828d22b7e3d7006387f9287b4aee48bc85c6
-ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:7d50e6c0cfc9c12e3ff378d5ae575e5e47dde15f@sha256:2e686f1c2bf7895c66321184d0242070327de5166afedf30260f406448e236ad
-ARG TESTER_IMAGE=quay.io/cilium/image-tester:0a7ee27812441d95926aec83929d97e93ce96aae@sha256:e96542b4f71dbc9cbe77feaf5b1fa9bd5e13122ee6418094731212f1c5667c67
-ARG GOLANG_IMAGE=docker.io/library/golang:1.24.4@sha256:10c131810f80a4802c49cab0961bbe18a16f4bb2fb99ef16deaa23e4246fc817
-ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:1747754567-1d8e3ec@sha256:acbb945f89906996273dda37a51bb9f52a61cfccd369dcbe5ddf9409cc97bd88
+ARG COMPILERS_IMAGE=quay.io/cilium/image-compilers:1755973935-c5bf38b@sha256:448b126455a301c48d4189bfa9335f44d7d4524d69dcbc8151013ecb6ac0f042
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:15744a5d10090a7962712a87762d6ac4fbaccab9@sha256:4e3e8b57400908b426a1945f99f0a280a40dd1ec7405362ebbccccce9e5f366f
+ARG TESTER_IMAGE=quay.io/cilium/image-tester:1755531540-60ee83e@sha256:1b05459281d6613acb8573b2cd7f488a0d224eebf031770babbfc6a294501cf7
+ARG GOLANG_IMAGE=docker.io/library/golang:1.25.0@sha256:5502b0e56fca23feba76dbc5387ba59c593c02ccc2f0f7355871ea9a0852cebe
+ARG CILIUM_LLVM_IMAGE=quay.io/cilium/cilium-llvm:1755973935-c5bf38b@sha256:40f98e82b2fdeb4936776792ee0dedaacab1892c2d689748a1745e3ee911cecf
 
 FROM ${COMPILERS_IMAGE} AS compilers-image
 
@@ -44,7 +46,9 @@ RUN \
       git \
       libc6-dev \
       make \
-      ccache && \
+      ccache \
+      python3-scapy \
+      python3-jinja2 && \
     apt-get purge --auto-remove && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -53,9 +57,9 @@ COPY --from=compilers-image /usr/lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gn
 
 COPY --from=golang-dist /usr/local/go /usr/local/go
 RUN mkdir -p /go
-ENV GOROOT /usr/local/go
-ENV GOPATH /go
-ENV PATH "${GOROOT}/bin:${GOPATH}/bin:${PATH}"
+ENV GOROOT=/usr/local/go
+ENV GOPATH=/go
+ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}"
 
 RUN GOARCH=${TARGETARCH} CGO_ENABLED=0 go install github.com/go-delve/delve/cmd/dlv@latest
 
@@ -81,20 +85,20 @@ RUN --mount=type=bind,readwrite,target=/go/src/github.com/cilium/cilium/images/b
     ./install-test-formatters.sh
 
 # used to facilitate the verifier tests
-COPY --from=llvm-dist /usr/local/bin/llvm-objcopy /bin/
+COPY --from=llvm-dist /usr/local/bin/llvm-objcopy /usr/local/bin/llvm-strip /bin/
 
 # Create a cache directory with 777 so that we can run the builder image and
 # compile golang code from any UID.
 RUN mkdir -p /.cache && chmod 777 /.cache && \
     mkdir -p /go/bin && chmod 777 /go/bin
 
-FROM ${TESTER_IMAGE} as test
+FROM ${TESTER_IMAGE} AS test
 COPY --from=rootfs / /
 COPY test /test
 RUN /test/bin/cst
 
 # this image is large, and re-using layers is beneficial,
 # so final images is not squashed
-FROM rootfs as release
+FROM rootfs AS release
 LABEL maintainer="maintainer@cilium.io"
 WORKDIR /go/src/github.com/cilium/cilium

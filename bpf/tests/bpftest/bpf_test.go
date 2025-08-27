@@ -35,10 +35,10 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/cilium/cilium/pkg/bpf"
-	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/datapath/link"
 	"github.com/cilium/cilium/pkg/maps/eventsmap"
-	"github.com/cilium/cilium/pkg/monitor"
+	"github.com/cilium/cilium/pkg/monitor/api"
+	"github.com/cilium/cilium/pkg/monitor/format"
 )
 
 var (
@@ -52,6 +52,16 @@ var (
 
 	dumpCtx = flag.Bool("dump-ctx", false, "If set, the program context will be dumped after a CHECK and SETUP run.")
 )
+
+type testLogWriter struct {
+	t *testing.T
+}
+
+func (w *testLogWriter) Write(p []byte) (n int, err error) {
+	// use the formatted output to avoid the new line
+	w.t.Logf("%s", string(p))
+	return len(p), nil
+}
 
 func TestBPF(t *testing.T) {
 	if testPath == nil || *testPath == "" {
@@ -176,18 +186,14 @@ func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer) []*cove
 
 	testNameToPrograms := make(map[string]programSet)
 
-	checkProgExists := func(progName, testName, progType string) {
-		checkProgName := strings.Replace(progName, progType, "check", 1)
-		if spec, ok := spec.Programs[checkProgName]; ok {
-			match := checkProgRegex.FindStringSubmatch(spec.SectionName)
-			if match[1] != testName {
-				t.Fatalf(
-					"File '%s' contains a %s program for '%s' test, but no check program.",
-					elfPath,
-					progType,
-					testName,
-				)
-			}
+	checkProgUnique := func(prog *ebpf.Program, testName, progType string) {
+		if prog != nil {
+			t.Fatalf(
+				"File '%s' contains duplicate %s programs for the '%s' test.",
+				elfPath,
+				progType,
+				testName,
+			)
 		}
 	}
 
@@ -199,17 +205,28 @@ func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer) []*cove
 
 		progs := testNameToPrograms[match[1]]
 		if match[2] == "pktgen" {
-			checkProgExists(progName, match[1], match[2])
+			checkProgUnique(progs.pktgenProg, match[1], match[2])
 			progs.pktgenProg = coll.Programs[progName]
 		}
 		if match[2] == "setup" {
-			checkProgExists(progName, match[1], match[2])
+			checkProgUnique(progs.setupProg, match[1], match[2])
 			progs.setupProg = coll.Programs[progName]
 		}
 		if match[2] == "check" {
+			checkProgUnique(progs.checkProg, match[1], match[2])
 			progs.checkProg = coll.Programs[progName]
 		}
 		testNameToPrograms[match[1]] = progs
+	}
+
+	for testName, progSet := range testNameToPrograms {
+		if progSet.checkProg == nil {
+			t.Fatalf(
+				"File '%s' does not contain a check program for the '%s' test.",
+				elfPath,
+				testName,
+			)
+		}
 	}
 
 	// Collect debug events and add them as logs of the main test
@@ -221,22 +238,14 @@ func loadAndRunSpec(t *testing.T, entry fs.DirEntry, instrLog io.Writer) []*cove
 		}
 		defer globalLogReader.Close()
 
-		linkCache := link.NewLinkCache()
-
+		formatter := format.NewMonitorFormatter(api.DEBUG, link.NewLinkCache(), &testLogWriter{t: t})
 		go func() {
 			for {
 				rec, err := globalLogReader.Read()
 				if err != nil {
 					return
 				}
-
-				dm := monitor.DebugMsg{}
-				reader := bytes.NewReader(rec.RawSample)
-				if err := binary.Read(reader, byteorder.Native, &dm); err != nil {
-					return
-				}
-
-				t.Log(dm.Message(linkCache))
+				formatter.FormatSample(rec.RawSample, rec.CPU)
 			}
 		}()
 	}

@@ -2,7 +2,7 @@ allowed-teams:
   - organization-members
 
 triggers:
-  /test:
+  /test\s*:
     workflows:
     - conformance-aws-cni.yaml
     - conformance-clustermesh.yaml
@@ -74,7 +74,7 @@ triggers:
   /fqdn-perf:
     workflows:
     - fqdn-perf.yaml
-  /scale-100(\s+(?:\s*version=[-+.0-9a-z]+)?)?:
+  /scale-100(\s+(?:nodes=[0-9]+)?(?:\s*version=[-+.0-9a-z]+)?(?:\s*sha=[a-f0-9]+)?)?:
     workflows:
     - scale-test-100-gce.yaml
   /scale-5:
@@ -95,6 +95,13 @@ triggers:
   /ci-ces-migrate:
     workflows:
     - tests-ces-migrate.yaml
+
+schedule:
+  nightly:
+    workflows:
+    - conformance-aks.yaml
+    - conformance-gateway-api.yaml
+    - conformance-gke.yaml
 
 workflows:
   conformance-aks.yaml:

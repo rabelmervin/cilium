@@ -27,6 +27,7 @@ import (
 	"github.com/cilium/cilium/pkg/debug"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/endpoint"
+	endpointapi "github.com/cilium/cilium/pkg/endpoint/api"
 	endpointcreator "github.com/cilium/cilium/pkg/endpoint/creator"
 	endpointmetadata "github.com/cilium/cilium/pkg/endpoint/metadata"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
@@ -59,6 +60,7 @@ import (
 	policyAPI "github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/resiliency"
 	"github.com/cilium/cilium/pkg/time"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 const (
@@ -99,6 +101,8 @@ type Daemon struct {
 
 	endpointCreator endpointcreator.EndpointCreator
 	endpointManager endpointmanager.EndpointManager
+
+	endpointAPIFence endpointapi.Fence
 
 	endpointRestoreComplete       chan struct{}
 	endpointInitialPolicyComplete chan struct{}
@@ -231,6 +235,11 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 		}
 	}
 
+	// WireGuard and IPSec are mutually exclusive.
+	if option.Config.EnableIPSec && params.WGAgent.Enabled() {
+		return nil, nil, fmt.Errorf("WireGuard (--%s) cannot be used with IPsec (--%s)", wgTypes.EnableWireguard, option.EnableIPSecName)
+	}
+
 	// IPAMENI IPSec is configured from Reinitialize() to pull in devices
 	// that may be added or removed at runtime.
 	if option.Config.EnableIPSec &&
@@ -239,7 +248,7 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 		// If devices are required, we don't look at the EncryptInterface, as we
 		// don't load bpf_network in loader.reinitializeIPSec. Instead, we load
 		// bpf_host onto physical devices as chosen by configuration.
-		!option.Config.AreDevicesRequired(params.KPRConfig) &&
+		!option.Config.AreDevicesRequired(params.KPRConfig, params.WGAgent.Enabled()) &&
 		option.Config.IPAM != ipamOption.IPAMENI {
 		link, err := linuxdatapath.NodeDeviceNameWithDefaultRoute(params.Logger)
 		if err != nil {
@@ -255,7 +264,7 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 	// detection, might disable BPF NodePort and friends. But this is fine, as
 	// the feature does not influence the decision which BPF maps should be
 	// created.
-	if err := initKubeProxyReplacementOptions(params.Logger, params.Sysctl, params.TunnelConfig, params.LBConfig, params.KPRConfig); err != nil {
+	if err := initKubeProxyReplacementOptions(params.Logger, params.Sysctl, params.TunnelConfig, params.LBConfig, params.KPRConfig, params.WGAgent); err != nil {
 		params.Logger.Error("unable to initialize kube-proxy replacement options", logfields.Error, err)
 		return nil, nil, fmt.Errorf("unable to initialize kube-proxy replacement options: %w", err)
 	}
@@ -304,6 +313,7 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 		lbConfig:          params.LBConfig,
 		kprCfg:            params.KPRConfig,
 		ciliumHealth:      params.CiliumHealth,
+		endpointAPIFence:  params.EndpointAPIFence,
 	}
 
 	// initialize endpointRestoreComplete channel as soon as possible so that subsystems
@@ -490,15 +500,6 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 		bootstrapStats.k8sInit.End(true)
 	}
 
-	if params.WGAgent != nil && option.Config.EnableWireguard {
-		if err := params.WGAgent.Init(d.ipcache); err != nil {
-			d.logger.Error("failed to initialize WireGuard agent", logfields.Error, err)
-			return nil, nil, fmt.Errorf("failed to initialize WireGuard agent: %w", err)
-		}
-
-		params.NodeManager.Subscribe(params.WGAgent)
-	}
-
 	// The kube-proxy replacement and host-fw devices detection should happen after
 	// establishing a connection to kube-apiserver, but before starting a k8s watcher.
 	// This is because the device detection requires self (Cilium)Node object.
@@ -507,7 +508,7 @@ func newDaemon(ctx context.Context, cleaner *daemonCleanup, params *daemonParams
 	drdName := ""
 	directRoutingDevice, _ := params.DirectRoutingDevice.Get(ctx, rxn)
 	if directRoutingDevice == nil {
-		if option.Config.AreDevicesRequired(params.KPRConfig) {
+		if option.Config.AreDevicesRequired(params.KPRConfig, params.WGAgent.Enabled()) {
 			// Fail hard if devices are required to function.
 			return nil, nil, fmt.Errorf("unable to determine direct routing device. Use --%s to specify it",
 				option.DirectRoutingDevice)

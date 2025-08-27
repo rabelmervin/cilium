@@ -18,13 +18,14 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 var Cell = cell.Module(
 	"mtu",
 	"MTU discovery",
 
-	cell.ProvidePrivate(newTable),
+	cell.ProvidePrivate(NewMTUTable),
 	cell.Provide(
 		statedb.RWTable[RouteMTU].ToTable,
 		newForCell,
@@ -38,19 +39,6 @@ type MTU interface {
 	GetRouteMTU() int
 	GetRoutePostEncryptMTU() int
 	IsEnableRouteMTUForCNIChaining() bool
-}
-
-func newTable(db *statedb.DB) (statedb.RWTable[RouteMTU], error) {
-	tbl, err := NewMTUTable()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := db.RegisterTable(tbl); err != nil {
-		return nil, err
-	}
-
-	return tbl, nil
 }
 
 type mtuParams struct {
@@ -68,6 +56,7 @@ type mtuParams struct {
 	Log             *slog.Logger
 	DaemonConfig    *option.DaemonConfig
 	LocalCiliumNode k8s.LocalCiliumNodeResource
+	WgConfig        wgTypes.WireguardConfig
 
 	Config Config
 }
@@ -90,12 +79,13 @@ func newForCell(lc cell.Lifecycle, p mtuParams, cc Config) (MTU, error) {
 	group := p.JobRegistry.NewGroup(p.Health, lc)
 	lc.Append(cell.Hook{
 		OnStart: func(ctx cell.HookContext) error {
-			tunnelOverIPv6 := !option.Config.EnableIPv4 && option.Config.RoutingMode == option.RoutingModeTunnel
+			tunnelOverIPv6 := option.Config.RoutingMode == option.RoutingModeTunnel &&
+				p.TunnelConfig.UnderlayProtocol() == tunnel.IPv6
 			*c = NewConfiguration(
 				p.IPsec.AuthKeySize(),
 				option.Config.EnableIPSec,
 				p.TunnelConfig.ShouldAdaptMTU(),
-				option.Config.EnableWireguard,
+				p.WgConfig.Enabled(),
 				tunnelOverIPv6,
 			)
 

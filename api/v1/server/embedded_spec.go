@@ -342,6 +342,9 @@ func init() {
           },
           "429": {
             "description": "Rate-limiting too many requests in the given time frame"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       }
@@ -424,6 +427,9 @@ func init() {
               "$ref": "#/definitions/Error"
             },
             "x-go-name": "Failed"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       },
@@ -464,6 +470,9 @@ func init() {
           },
           "429": {
             "description": "Rate-limiting too many requests in the given time frame"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       },
@@ -508,6 +517,9 @@ func init() {
               "$ref": "#/definitions/Error"
             },
             "x-go-name": "Failed"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       }
@@ -581,6 +593,9 @@ func init() {
               "$ref": "#/definitions/Error"
             },
             "x-go-name": "Failed"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       }
@@ -680,6 +695,9 @@ func init() {
               "$ref": "#/definitions/Error"
             },
             "x-go-name": "UpdateFailed"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       }
@@ -1491,129 +1509,6 @@ func init() {
         }
       }
     },
-    "/recorder": {
-      "get": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Retrieve list of all recorders",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/Recorder"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/recorder/masks": {
-      "get": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Retrieve list of all recorder masks",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/RecorderMask"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/recorder/{id}": {
-      "get": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Retrieve configuration of a recorder",
-        "parameters": [
-          {
-            "$ref": "#/parameters/recorder-id"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "$ref": "#/definitions/Recorder"
-            }
-          },
-          "404": {
-            "description": "Recorder not found"
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Create or update recorder",
-        "parameters": [
-          {
-            "$ref": "#/parameters/recorder-id"
-          },
-          {
-            "$ref": "#/parameters/recorder-config"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Updated"
-          },
-          "201": {
-            "description": "Created"
-          },
-          "403": {
-            "description": "Forbidden"
-          },
-          "500": {
-            "description": "Error while creating recorder",
-            "schema": {
-              "$ref": "#/definitions/Error"
-            },
-            "x-go-name": "Failure"
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Delete a recorder",
-        "parameters": [
-          {
-            "$ref": "#/parameters/recorder-id"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success"
-          },
-          "403": {
-            "description": "Forbidden"
-          },
-          "404": {
-            "description": "Recorder not found"
-          },
-          "500": {
-            "description": "Recorder deletion failed",
-            "schema": {
-              "$ref": "#/definitions/Error"
-            },
-            "x-go-name": "Failure"
-          }
-        }
-      }
-    },
     "/service": {
       "get": {
         "tags": [
@@ -1806,6 +1701,7 @@ func init() {
           "enum": [
             "active",
             "terminating",
+            "terminating-not-serving",
             "quarantined",
             "maintenance"
           ]
@@ -1842,6 +1738,15 @@ func init() {
         "enabled": {
           "description": "Is bandwidth manager enabled",
           "type": "boolean"
+        }
+      }
+    },
+    "BgpCapabilities": {
+      "description": "Represents the BGP capabilities.",
+      "properties": {
+        "capabilities": {
+          "description": "Base64-encoded BGP capabilities details",
+          "type": "string"
         }
       }
     },
@@ -1963,6 +1868,13 @@ func init() {
           "description": "Local AS Number",
           "type": "integer"
         },
+        "local-capabilities": {
+          "description": "Capabilities announced by the local peer",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BgpCapabilities"
+          }
+        },
         "peer-address": {
           "description": "IP Address of peer",
           "type": "string"
@@ -1976,6 +1888,13 @@ func init() {
           "type": "integer",
           "maximum": 65535,
           "minimum": 1
+        },
+        "remote-capabilities": {
+          "description": "Capabilities announced by the remote peer",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BgpCapabilities"
+          }
         },
         "session-state": {
           "description": "BGP peer operational state as described here\nhttps://www.rfc-editor.org/rfc/rfc4271#section-8.2.2\n",
@@ -4433,136 +4352,6 @@ func init() {
         }
       }
     },
-    "Recorder": {
-      "description": "Collection of wildcard filters for pcap recorder",
-      "type": "object",
-      "properties": {
-        "spec": {
-          "$ref": "#/definitions/RecorderSpec"
-        },
-        "status": {
-          "$ref": "#/definitions/RecorderStatus"
-        }
-      }
-    },
-    "RecorderFilter": {
-      "description": "n-tuple filter to match traffic to be recorded",
-      "type": "object",
-      "properties": {
-        "dst-port": {
-          "description": "Layer 4 destination port, zero (or in future range)",
-          "type": "string"
-        },
-        "dst-prefix": {
-          "description": "Layer 3 destination CIDR",
-          "type": "string"
-        },
-        "protocol": {
-          "description": "Layer 4 protocol",
-          "type": "string",
-          "enum": [
-            "TCP",
-            "UDP",
-            "SCTP",
-            "ANY"
-          ]
-        },
-        "src-port": {
-          "description": "Layer 4 source port, zero (or in future range)",
-          "type": "string"
-        },
-        "src-prefix": {
-          "description": "Layer 3 source CIDR",
-          "type": "string"
-        }
-      }
-    },
-    "RecorderMask": {
-      "description": "Individual mask for pcap recorder",
-      "type": "object",
-      "properties": {
-        "status": {
-          "$ref": "#/definitions/RecorderMaskStatus"
-        }
-      }
-    },
-    "RecorderMaskSpec": {
-      "description": "Configuration of a recorder mask",
-      "type": "object",
-      "properties": {
-        "dst-port-mask": {
-          "description": "Layer 4 destination port mask",
-          "type": "string"
-        },
-        "dst-prefix-mask": {
-          "description": "Layer 3 destination IP mask",
-          "type": "string"
-        },
-        "priority": {
-          "description": "Priority of this mask",
-          "type": "integer"
-        },
-        "protocol-mask": {
-          "description": "Layer 4 protocol mask",
-          "type": "string"
-        },
-        "src-port-mask": {
-          "description": "Layer 4 source port mask",
-          "type": "string"
-        },
-        "src-prefix-mask": {
-          "description": "Layer 3 source IP mask",
-          "type": "string"
-        },
-        "users": {
-          "description": "Number of users of this mask",
-          "type": "integer"
-        }
-      }
-    },
-    "RecorderMaskStatus": {
-      "description": "Configuration of a recorder mask",
-      "type": "object",
-      "properties": {
-        "realized": {
-          "$ref": "#/definitions/RecorderMaskSpec"
-        }
-      }
-    },
-    "RecorderSpec": {
-      "description": "Configuration of a recorder",
-      "type": "object",
-      "required": [
-        "id",
-        "filters"
-      ],
-      "properties": {
-        "capture-length": {
-          "description": "Maximum packet length or zero for full packet length",
-          "type": "integer"
-        },
-        "filters": {
-          "description": "List of wildcard filters for given recorder",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/RecorderFilter"
-          }
-        },
-        "id": {
-          "description": "Unique identification",
-          "type": "integer"
-        }
-      }
-    },
-    "RecorderStatus": {
-      "description": "Configuration of a recorder",
-      "type": "object",
-      "properties": {
-        "realized": {
-          "$ref": "#/definitions/RecorderSpec"
-        }
-      }
-    },
     "RemoteCluster": {
       "description": "Status of remote cluster\n\n+k8s:deepcopy-gen=true",
       "properties": {
@@ -5181,6 +4970,10 @@ func init() {
             "$ref": "#/definitions/WireguardInterface"
           }
         },
+        "node-encrypt-opt-out-labels": {
+          "description": "Label selector for nodes which will opt-out of node-to-node encryption",
+          "type": "string"
+        },
         "node-encryption": {
           "description": "Node Encryption status",
           "type": "string"
@@ -5360,22 +5153,6 @@ func init() {
       "schema": {
         "$ref": "#/definitions/PrefilterSpec"
       }
-    },
-    "recorder-config": {
-      "description": "Recorder configuration",
-      "name": "config",
-      "in": "body",
-      "required": true,
-      "schema": {
-        "$ref": "#/definitions/RecorderSpec"
-      }
-    },
-    "recorder-id": {
-      "type": "integer",
-      "description": "ID of recorder",
-      "name": "id",
-      "in": "path",
-      "required": true
     },
     "service-address": {
       "description": "Service address configuration",
@@ -5778,6 +5555,9 @@ func init() {
           },
           "429": {
             "description": "Rate-limiting too many requests in the given time frame"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       }
@@ -5873,6 +5653,9 @@ func init() {
               "$ref": "#/definitions/Error"
             },
             "x-go-name": "Failed"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       },
@@ -5917,6 +5700,9 @@ func init() {
           },
           "429": {
             "description": "Rate-limiting too many requests in the given time frame"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       },
@@ -5970,6 +5756,9 @@ func init() {
               "$ref": "#/definitions/Error"
             },
             "x-go-name": "Failed"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       }
@@ -6051,6 +5840,9 @@ func init() {
               "$ref": "#/definitions/Error"
             },
             "x-go-name": "Failed"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       }
@@ -6162,6 +5954,9 @@ func init() {
               "$ref": "#/definitions/Error"
             },
             "x-go-name": "UpdateFailed"
+          },
+          "503": {
+            "description": "Service Unavailable"
           }
         }
       }
@@ -7083,147 +6878,6 @@ func init() {
         }
       }
     },
-    "/recorder": {
-      "get": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Retrieve list of all recorders",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/Recorder"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/recorder/masks": {
-      "get": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Retrieve list of all recorder masks",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/RecorderMask"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/recorder/{id}": {
-      "get": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Retrieve configuration of a recorder",
-        "parameters": [
-          {
-            "type": "integer",
-            "description": "ID of recorder",
-            "name": "id",
-            "in": "path",
-            "required": true
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "schema": {
-              "$ref": "#/definitions/Recorder"
-            }
-          },
-          "404": {
-            "description": "Recorder not found"
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Create or update recorder",
-        "parameters": [
-          {
-            "type": "integer",
-            "description": "ID of recorder",
-            "name": "id",
-            "in": "path",
-            "required": true
-          },
-          {
-            "description": "Recorder configuration",
-            "name": "config",
-            "in": "body",
-            "required": true,
-            "schema": {
-              "$ref": "#/definitions/RecorderSpec"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Updated"
-          },
-          "201": {
-            "description": "Created"
-          },
-          "403": {
-            "description": "Forbidden"
-          },
-          "500": {
-            "description": "Error while creating recorder",
-            "schema": {
-              "$ref": "#/definitions/Error"
-            },
-            "x-go-name": "Failure"
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "recorder"
-        ],
-        "summary": "Delete a recorder",
-        "parameters": [
-          {
-            "type": "integer",
-            "description": "ID of recorder",
-            "name": "id",
-            "in": "path",
-            "required": true
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success"
-          },
-          "403": {
-            "description": "Forbidden"
-          },
-          "404": {
-            "description": "Recorder not found"
-          },
-          "500": {
-            "description": "Recorder deletion failed",
-            "schema": {
-              "$ref": "#/definitions/Error"
-            },
-            "x-go-name": "Failure"
-          }
-        }
-      }
-    },
     "/service": {
       "get": {
         "tags": [
@@ -7416,6 +7070,7 @@ func init() {
           "enum": [
             "active",
             "terminating",
+            "terminating-not-serving",
             "quarantined",
             "maintenance"
           ]
@@ -7452,6 +7107,15 @@ func init() {
         "enabled": {
           "description": "Is bandwidth manager enabled",
           "type": "boolean"
+        }
+      }
+    },
+    "BgpCapabilities": {
+      "description": "Represents the BGP capabilities.",
+      "properties": {
+        "capabilities": {
+          "description": "Base64-encoded BGP capabilities details",
+          "type": "string"
         }
       }
     },
@@ -7573,6 +7237,13 @@ func init() {
           "description": "Local AS Number",
           "type": "integer"
         },
+        "local-capabilities": {
+          "description": "Capabilities announced by the local peer",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BgpCapabilities"
+          }
+        },
         "peer-address": {
           "description": "IP Address of peer",
           "type": "string"
@@ -7586,6 +7257,13 @@ func init() {
           "type": "integer",
           "maximum": 65535,
           "minimum": 1
+        },
+        "remote-capabilities": {
+          "description": "Capabilities announced by the remote peer",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BgpCapabilities"
+          }
         },
         "session-state": {
           "description": "BGP peer operational state as described here\nhttps://www.rfc-editor.org/rfc/rfc4271#section-8.2.2\n",
@@ -10487,136 +10165,6 @@ func init() {
         }
       }
     },
-    "Recorder": {
-      "description": "Collection of wildcard filters for pcap recorder",
-      "type": "object",
-      "properties": {
-        "spec": {
-          "$ref": "#/definitions/RecorderSpec"
-        },
-        "status": {
-          "$ref": "#/definitions/RecorderStatus"
-        }
-      }
-    },
-    "RecorderFilter": {
-      "description": "n-tuple filter to match traffic to be recorded",
-      "type": "object",
-      "properties": {
-        "dst-port": {
-          "description": "Layer 4 destination port, zero (or in future range)",
-          "type": "string"
-        },
-        "dst-prefix": {
-          "description": "Layer 3 destination CIDR",
-          "type": "string"
-        },
-        "protocol": {
-          "description": "Layer 4 protocol",
-          "type": "string",
-          "enum": [
-            "TCP",
-            "UDP",
-            "SCTP",
-            "ANY"
-          ]
-        },
-        "src-port": {
-          "description": "Layer 4 source port, zero (or in future range)",
-          "type": "string"
-        },
-        "src-prefix": {
-          "description": "Layer 3 source CIDR",
-          "type": "string"
-        }
-      }
-    },
-    "RecorderMask": {
-      "description": "Individual mask for pcap recorder",
-      "type": "object",
-      "properties": {
-        "status": {
-          "$ref": "#/definitions/RecorderMaskStatus"
-        }
-      }
-    },
-    "RecorderMaskSpec": {
-      "description": "Configuration of a recorder mask",
-      "type": "object",
-      "properties": {
-        "dst-port-mask": {
-          "description": "Layer 4 destination port mask",
-          "type": "string"
-        },
-        "dst-prefix-mask": {
-          "description": "Layer 3 destination IP mask",
-          "type": "string"
-        },
-        "priority": {
-          "description": "Priority of this mask",
-          "type": "integer"
-        },
-        "protocol-mask": {
-          "description": "Layer 4 protocol mask",
-          "type": "string"
-        },
-        "src-port-mask": {
-          "description": "Layer 4 source port mask",
-          "type": "string"
-        },
-        "src-prefix-mask": {
-          "description": "Layer 3 source IP mask",
-          "type": "string"
-        },
-        "users": {
-          "description": "Number of users of this mask",
-          "type": "integer"
-        }
-      }
-    },
-    "RecorderMaskStatus": {
-      "description": "Configuration of a recorder mask",
-      "type": "object",
-      "properties": {
-        "realized": {
-          "$ref": "#/definitions/RecorderMaskSpec"
-        }
-      }
-    },
-    "RecorderSpec": {
-      "description": "Configuration of a recorder",
-      "type": "object",
-      "required": [
-        "id",
-        "filters"
-      ],
-      "properties": {
-        "capture-length": {
-          "description": "Maximum packet length or zero for full packet length",
-          "type": "integer"
-        },
-        "filters": {
-          "description": "List of wildcard filters for given recorder",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/RecorderFilter"
-          }
-        },
-        "id": {
-          "description": "Unique identification",
-          "type": "integer"
-        }
-      }
-    },
-    "RecorderStatus": {
-      "description": "Configuration of a recorder",
-      "type": "object",
-      "properties": {
-        "realized": {
-          "$ref": "#/definitions/RecorderSpec"
-        }
-      }
-    },
     "RemoteCluster": {
       "description": "Status of remote cluster\n\n+k8s:deepcopy-gen=true",
       "properties": {
@@ -11303,6 +10851,10 @@ func init() {
             "$ref": "#/definitions/WireguardInterface"
           }
         },
+        "node-encrypt-opt-out-labels": {
+          "description": "Label selector for nodes which will opt-out of node-to-node encryption",
+          "type": "string"
+        },
         "node-encryption": {
           "description": "Node Encryption status",
           "type": "string"
@@ -11482,22 +11034,6 @@ func init() {
       "schema": {
         "$ref": "#/definitions/PrefilterSpec"
       }
-    },
-    "recorder-config": {
-      "description": "Recorder configuration",
-      "name": "config",
-      "in": "body",
-      "required": true,
-      "schema": {
-        "$ref": "#/definitions/RecorderSpec"
-      }
-    },
-    "recorder-id": {
-      "type": "integer",
-      "description": "ID of recorder",
-      "name": "id",
-      "in": "path",
-      "required": true
     },
     "service-address": {
       "description": "Service address configuration",

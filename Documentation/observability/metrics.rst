@@ -50,8 +50,10 @@ if you want to disable them, set Helm value ``operator.prometheus.enabled=false`
 The ports can be configured via ``prometheus.port``,
 ``envoy.prometheus.port``, or ``operator.prometheus.port`` respectively.
 
-When metrics are enabled, all Cilium components will have the following
-annotations. They can be used to signal Prometheus whether to scrape metrics:
+
+When metrics are enabled and ServiceMonitor is not enabled (``hubble.metrics.serviceMonitor.enabled: false``), all Cilium components will have the following annotations. These annotations can be used to signal Prometheus whether to scrape metrics.
+
+If ServiceMonitor is enabled (``hubble.metrics.serviceMonitor.enabled: true``), these annotations are omitted and Prometheus discovers metrics via the ServiceMonitor resource.
 
 .. code-block:: yaml
 
@@ -410,7 +412,7 @@ Name                                       Labels                               
 ========================================== ===================================================================== ========== ========================================================
 ``bpf_syscall_duration_seconds``           ``operation``, ``outcome``                                            Disabled   Duration of eBPF system call performed
 ``bpf_map_ops_total``                      ``mapName`` (deprecated), ``map_name``, ``operation``, ``outcome``    Enabled    Number of eBPF map operations performed. ``mapName`` is deprecated and will be removed in 1.10. Use ``map_name`` instead.
-``bpf_map_pressure``                       ``map_name``                                                          Enabled    Map pressure is defined as a ratio of the required map size compared to its configured size. Values < 1.0 indicate the map's utilization, while values >= 1.0 indicate that the map is full. Policy map metrics are only reported when the ratio is over 0.1, ie 10% full.
+``bpf_map_pressure``                       ``map_name``                                                          Enabled    Map pressure is defined as a ratio of the required map size compared to its configured size. Values < 1.0 indicate the map's utilization, while values >= 1.0 indicate that the map is full. Policy map pressure metrics are emitted only when map utilization exceeds the threshold set by ``policyMapPressureMetricsThreshold`` helm value, which defaults to 0.1 (10% full).
 ``bpf_map_capacity``                       ``map_group``                                                         Enabled    Maximum size of eBPF maps by group of maps (type of map that have the same max capacity size). Map types with size of 65536 are not emitted, missing map types can be assumed to be 65536.
 ``bpf_maps_virtual_memory_max_bytes``                                                                            Enabled    Max memory used by eBPF maps installed in the system
 ``bpf_progs_virtual_memory_max_bytes``                                                                           Enabled    Max memory used by eBPF programs installed in the system
@@ -540,7 +542,7 @@ Kubernetes Rest Client
 Name                                          Labels                                        Default    Description
 ============================================= ============================================= ========== ===========================================================
 ``k8s_client_api_latency_time_seconds``       ``path``, ``method``                          Enabled    Duration of processed API calls labeled by path and method
-``k8s_client_rate_limiter_duration_seconds``  ``path``, ``method``                          Enabled    Kubernetes client rate limiter latency in seconds. Broken down by path and method
+``k8s_client_rate_limiter_duration_seconds``                                                Enabled    Kubernetes client rate limiter latency in seconds.
 ``k8s_client_api_calls_total``                ``host``, ``method``, ``return_code``         Enabled    Number of API calls made to kube-apiserver labeled by host, method and return code
 ============================================= ============================================= ========== ===========================================================
 
@@ -790,10 +792,14 @@ CiliumEndpointSlices (CES)
 Name                                           Labels                           Description
 ============================================== ================================ ========================================================
 ``number_of_ceps_per_ces``                                                      The number of CEPs batched in a CES
-``number_of_cep_changes_per_ces``              ``opcode``                       The number of changed CEPs in each CES update
+``number_of_cep_changes_per_ces``              ``opcode``, ``failure_type``     The number of changed CEPs in each CES update
 ``ces_sync_total``                             ``outcome``                      The number of completed CES syncs by outcome
 ``ces_queueing_delay_seconds``                                                  CiliumEndpointSlice queueing delay in seconds
 ============================================== ================================ ========================================================
+
+Note that the CES controller has multiple internal queues for handling CES updates.
+Detailed metrics which are emitted by these queues can be found in the
+:ref:`Internal WorkQueues <internal_workqueues_metrics>` section below.
 
 Unmanaged Pods
 ~~~~~~~~~~~~~~
@@ -830,10 +836,13 @@ Name                                        Labels                      Descript
 ``cid_controller_work_queue_latency``       ``resource``, ``phase``     Duration of CID controller work queues enqueuing and processing latencies in seconds
 =========================================== =========================== =====================================================================================
 
+.. _internal_workqueues_metrics:
+
 Internal WorkQueues
 ~~~~~~~~~~~~~~~~~~~~
 
-The Operator uses internal queues to manage the processing of various tasks. Currently only the Cilium Node Synchronizer queues are reporting the metrics listed below.
+The Operator uses internal queues to manage the processing of various tasks.
+Currently, only the Cilium Node Synchronizer queues and Cilium EndpointSlice Controller queues are reporting the metrics listed below.
 
 ==================================================== ============================================= ========== ===========================================================
 Name                                                 Labels                                        Default    Description
@@ -846,6 +855,17 @@ Name                                                 Labels                     
 ``workqueue_longest_running_processor_seconds``      ``queue_name``                                 Enabled    Duration in seconds of the longest running processor for workqueue
 ``workqueue_retries_total``                          ``queue_name``                                 Enabled    Total number of retries handled by workqueue
 ==================================================== ============================================= ========== ===========================================================
+
+MCS-API
+~~~~~~~
+
+==================================== ============================================================ ========== ===========================================================
+Name                                                 Labels                                                    Default     Description
+==================================== ============================================================ ========== ===========================================================
+``serviceexport_info``               ``serviceexport``, ``namespace``                             Enabled    Information about ServiceExport in the local cluster
+``serviceexport_status_condition``   ``serviceexport``, ``namespace``, ``condition``, ``status``  Enabled    Status Condition of ServiceExport in the local cluster
+``serviceimport_info``               ``serviceimport``, ``namespace``                             Enabled    Information about ServiceImport in the local cluster
+==================================== ============================================================ ========== ===========================================================
 
 
 Hubble
@@ -1451,4 +1471,3 @@ Given a Node forwarding one or more such egress-IP and remote endpoint tuples, t
 This metric is especially useful when using the egress gateway feature where it's possible to overload a Node if many connections are all going to the same endpoint.
 In general, this metric should normally be fairly low.
 A high number here may indicate that a Node is reaching its limit for connections to one or more external endpoints.
-

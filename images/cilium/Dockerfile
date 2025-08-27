@@ -1,12 +1,14 @@
+# check=error=true
+
 # Copyright Authors of Cilium
 # SPDX-License-Identifier: Apache-2.0
 
-ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:bdd6d921c68ea218df7cc59afa832ba6b74e83c3@sha256:b9337447288438592b447c8ab1b5dde22772fa55dd1da277aef7c7f917516f83
-ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:7d50e6c0cfc9c12e3ff378d5ae575e5e47dde15f@sha256:2e686f1c2bf7895c66321184d0242070327de5166afedf30260f406448e236ad
+ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:850a1e5a61b59edd3de68a2bff77bc2e0376ed23@sha256:8196c1f53a81f98a2ec841d1ce3fee6374f56ccadbf10c31a0d00726a1f84317
+ARG CILIUM_RUNTIME_IMAGE=quay.io/cilium/cilium-runtime:15744a5d10090a7962712a87762d6ac4fbaccab9@sha256:4e3e8b57400908b426a1945f99f0a280a40dd1ec7405362ebbccccce9e5f366f
 #
 # cilium-envoy from github.com/cilium/proxy
 #
-ARG CILIUM_ENVOY_IMAGE=quay.io/cilium/cilium-envoy:v1.34.1-1750869463-42c7e8cf0f93ea19c9cb7e4d0ad2a339b3f81ad2@sha256:892cab92ffaf8499be90bd227bf07181e4b460ecd97750032ea7e91710a8acce
+ARG CILIUM_ENVOY_IMAGE=quay.io/cilium/cilium-envoy:v1.35.1-1755991022-2b90dbb2c668eba4aaf54b18e85862e51b6ea06e@sha256:be8de2fd5fee672b4371494dfe742840a8b7e935806013424c367dd533b5727a
 
 FROM ${CILIUM_ENVOY_IMAGE} AS cilium-envoy
 
@@ -117,7 +119,7 @@ CMD ["/usr/bin/cilium-dbg"]
 #
 # Cilium debug image.
 #
-# Typical image bulids will stop above at the 'release' target, but
+# Typical image builds will stop above at the 'release' target, but
 # developers follow this Dockerfile to the end. Starting from a release
 # image, install delve debugger and wrap the cilium-agent binary calls
 # with a script that automatically provisions the debugger on a

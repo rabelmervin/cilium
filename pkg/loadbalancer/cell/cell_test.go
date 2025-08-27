@@ -32,7 +32,7 @@ func TestCell(t *testing.T) {
 		daemonk8s.ResourcesCell,
 		daemonk8s.TablesCell,
 		maglev.Cell,
-		node.LocalNodeStoreCell,
+		node.LocalNodeStoreTestCell,
 		metrics.Cell,
 		kpr.Cell,
 		Cell,
@@ -44,7 +44,6 @@ func TestCell(t *testing.T) {
 				return &option.DaemonConfig{}
 			},
 		),
-		cell.Invoke(statedb.RegisterTable[tables.NodeAddress]),
 	)
 	require.NoError(t, h.Populate(hivetest.Logger(t)))
 }

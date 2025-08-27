@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"slices"
 	"strings"
@@ -123,7 +124,7 @@ func hasFunctionReferences(insns asm.Instructions) bool {
 //
 // Passing a nil target will relocate against the running kernel. insns are
 // modified in place.
-func applyRelocations(insns asm.Instructions, bo binary.ByteOrder, b *btf.Builder, c *btf.Cache) error {
+func applyRelocations(insns asm.Instructions, bo binary.ByteOrder, b *btf.Builder, c *btf.Cache, extraTargets []*btf.Spec) error {
 	var relos []*btf.CORERelocation
 	var reloInsns []*asm.Instruction
 	iter := insns.Iterate()
@@ -148,11 +149,13 @@ func applyRelocations(insns asm.Instructions, bo binary.ByteOrder, b *btf.Builde
 	}
 
 	modules, err := c.Modules()
-	if err != nil {
+	// Ignore ErrNotExists to cater to kernels which have CONFIG_DEBUG_INFO_BTF_MODULES
+	// or CONFIG_DEBUG_INFO_BTF disabled.
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 
-	targets := make([]*btf.Spec, 0, 1+len(modules))
+	targets := make([]*btf.Spec, 0, 1+len(modules)+len(extraTargets))
 	targets = append(targets, kernelTarget)
 
 	for _, kmod := range modules {
@@ -163,6 +166,8 @@ func applyRelocations(insns asm.Instructions, bo binary.ByteOrder, b *btf.Builde
 
 		targets = append(targets, spec)
 	}
+
+	targets = append(targets, extraTargets...)
 
 	fixups, err := btf.CORERelocate(relos, targets, bo, b.Add)
 	if err != nil {
@@ -482,7 +487,13 @@ func resolveKconfigReferences(insns asm.Instructions) (_ *Map, err error) {
 }
 
 func resolveKsymReferences(insns asm.Instructions) error {
-	var missing []string
+	type fixup struct {
+		*asm.Instruction
+		*ksymMeta
+	}
+
+	var symbols map[string]uint64
+	var fixups []fixup
 
 	iter := insns.Iterate()
 	for iter.Next() {
@@ -492,25 +503,36 @@ func resolveKsymReferences(insns asm.Instructions) error {
 			continue
 		}
 
-		addr, err := kallsyms.Address(meta.Name)
-		if err != nil {
-			return fmt.Errorf("resolve ksym %s: %w", meta.Name, err)
+		if symbols == nil {
+			symbols = make(map[string]uint64)
 		}
-		if addr != 0 {
-			ins.Constant = int64(addr)
+
+		symbols[meta.Name] = 0
+		fixups = append(fixups, fixup{
+			iter.Ins, meta,
+		})
+	}
+
+	if len(symbols) == 0 {
+		return nil
+	}
+
+	if err := kallsyms.AssignAddresses(symbols); err != nil {
+		return fmt.Errorf("resolve ksym addresses: %w", err)
+	}
+
+	var missing []string
+	for _, fixup := range fixups {
+		addr := symbols[fixup.Name]
+		// A weak ksym variable in eBPF C means its resolution is optional.
+		if addr == 0 && fixup.Binding != elf.STB_WEAK {
+			if !slices.Contains(missing, fixup.Name) {
+				missing = append(missing, fixup.Name)
+			}
 			continue
 		}
 
-		if meta.Binding == elf.STB_WEAK {
-			// A weak ksym variable in eBPF C means its resolution is optional.
-			// Set a zero constant explicitly for clarity.
-			ins.Constant = 0
-			continue
-		}
-
-		if !slices.Contains(missing, meta.Name) {
-			missing = append(missing, meta.Name)
-		}
+		fixup.Constant = int64(addr)
 	}
 
 	if len(missing) > 0 {

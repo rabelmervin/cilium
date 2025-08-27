@@ -6,7 +6,6 @@ package reconciler
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -43,43 +42,38 @@ const (
 
 var (
 	// special addresses that are replaced by the test runner.
-	autoAddr = loadbalancer.L3n4Addr{
-		AddrCluster: types.MustParseAddrCluster("0.0.0.1"),
-		L4Addr:      loadbalancer.L4Addr{},
-		Scope:       0,
-	}
-	zeroAddr = loadbalancer.L3n4Addr{
-		AddrCluster: types.MustParseAddrCluster("0.0.0.3"),
-		L4Addr:      loadbalancer.L4Addr{},
-		Scope:       0,
-	}
-
-	extraFrontend = loadbalancer.L3n4Addr{
-		AddrCluster: types.MustParseAddrCluster("10.0.0.2"),
-		L4Addr: loadbalancer.L4Addr{
-			Protocol: loadbalancer.TCP,
-			Port:     80,
-		},
-		Scope: 0,
-	}
+	autoAddr = loadbalancer.NewL3n4Addr(
+		loadbalancer.NONE,
+		types.MustParseAddrCluster("0.0.0.1"),
+		0,
+		loadbalancer.ScopeExternal,
+	)
+	zeroAddr = loadbalancer.NewL3n4Addr(
+		loadbalancer.NONE,
+		types.MustParseAddrCluster("0.0.0.3"),
+		0,
+		loadbalancer.ScopeExternal,
+	)
+	extraFrontend = loadbalancer.NewL3n4Addr(
+		loadbalancer.TCP,
+		types.MustParseAddrCluster("10.0.0.2"),
+		80,
+		loadbalancer.ScopeExternal,
+	)
 
 	// backend addresses
-	backend1 = loadbalancer.L3n4Addr{
-		AddrCluster: types.MustParseAddrCluster("10.1.0.1"),
-		L4Addr: loadbalancer.L4Addr{
-			Protocol: loadbalancer.TCP,
-			Port:     80,
-		},
-		Scope: 0,
-	}
-	backend2 = loadbalancer.L3n4Addr{
-		AddrCluster: types.MustParseAddrCluster("10.1.0.2"),
-		L4Addr: loadbalancer.L4Addr{
-			Protocol: loadbalancer.TCP,
-			Port:     80,
-		},
-		Scope: 0,
-	}
+	backend1 = loadbalancer.NewL3n4Addr(
+		loadbalancer.TCP,
+		types.MustParseAddrCluster("10.1.0.1"),
+		80,
+		loadbalancer.ScopeExternal,
+	)
+	backend2 = loadbalancer.NewL3n4Addr(
+		loadbalancer.TCP,
+		types.MustParseAddrCluster("10.1.0.2"),
+		80,
+		loadbalancer.ScopeExternal,
+	)
 
 	// frontendAddrs are assigned to the <auto>/autoAddr. Each test set is run with
 	// each of these.
@@ -93,6 +87,14 @@ var (
 		netip.MustParseAddr("2002::1"),
 	}
 )
+
+func withClusterID(be loadbalancer.L3n4Addr, clusterID uint32) loadbalancer.L3n4Addr {
+	return loadbalancer.NewL3n4Addr(
+		be.Protocol(),
+		types.AddrClusterFrom(be.AddrCluster().Addr(), clusterID),
+		be.Port(), be.Scope(),
+	)
+}
 
 func parseAddrPort(s string) loadbalancer.L3n4Addr {
 	addrS, portS, found := strings.Cut(s, "]:")
@@ -116,9 +118,9 @@ func parseAddrPort(s string) loadbalancer.L3n4Addr {
 }
 
 func dumpLBMapsWithReplace(lbmaps maps.LBMaps, feAddr loadbalancer.L3n4Addr, sanitizeIDs bool) (out []maps.MapDump) {
-	replaceAddr := func(addr net.IP, port uint16) (s string) {
+	replaceAddr := func(addr types.AddrCluster, port uint16) (s string) {
 		s = addr.String()
-		if addr.To4() == nil {
+		if !addr.Is4() {
 			s = "[" + s + "]"
 		}
 		s = fmt.Sprintf("%s:%d", s, port)
@@ -127,7 +129,7 @@ func dumpLBMapsWithReplace(lbmaps maps.LBMaps, feAddr loadbalancer.L3n4Addr, san
 			return
 		}
 		switch addr.String() {
-		case feAddr.AddrCluster.String():
+		case feAddr.AddrCluster().String():
 			s = "<auto>"
 		case nodePortAddrs[0].String():
 			s = "<nodePort>"
@@ -287,6 +289,33 @@ var clusterIPTestCases = []testCase{
 			"SVC: ID=1 ADDR=<auto>/TCP SLOT=0 LBALG=undef AFFTimeout=0 COUNT=2 QCOUNT=0 FLAGS=ClusterIP+Local+InternalLocal+non-routable",
 			"SVC: ID=1 ADDR=<auto>/TCP SLOT=1 BEID=1 COUNT=0 QCOUNT=0 FLAGS=ClusterIP+Local+InternalLocal+non-routable",
 			"SVC: ID=1 ADDR=<auto>/TCP SLOT=2 BEID=2 COUNT=0 QCOUNT=0 FLAGS=ClusterIP+Local+InternalLocal+non-routable",
+		},
+		nil,
+	),
+
+	newTestCase(
+		"ClusterIP_add_backends_with_cluster_id",
+		func(svc *loadbalancer.Service, fe *loadbalancer.Frontend) (delete bool, bes []loadbalancer.Backend) {
+			fe.Type = ClusterIP
+			fe.Address = autoAddr
+			be1, be2, be3, be4 :=
+				newTestBackend(backend1, loadbalancer.BackendStateActive),
+				newTestBackend(backend2, loadbalancer.BackendStateActive),
+				newTestBackend(withClusterID(backend2, 10), loadbalancer.BackendStateActive),
+				newTestBackend(withClusterID(backend2, 20), loadbalancer.BackendStateActive)
+			return false, []loadbalancer.Backend{be1, be2, be3, be4}
+		},
+		[]maps.MapDump{
+			"BE: ID=1 ADDR=10.1.0.1:80/TCP STATE=active",
+			"BE: ID=2 ADDR=10.1.0.2:80/TCP STATE=active",
+			"BE: ID=3 ADDR=10.1.0.2@10:80/TCP STATE=active",
+			"BE: ID=4 ADDR=10.1.0.2@20:80/TCP STATE=active",
+			"REV: ID=1 ADDR=<auto>",
+			"SVC: ID=1 ADDR=<auto>/TCP SLOT=0 LBALG=undef AFFTimeout=0 COUNT=4 QCOUNT=0 FLAGS=ClusterIP+Local+InternalLocal+non-routable",
+			"SVC: ID=1 ADDR=<auto>/TCP SLOT=1 BEID=1 COUNT=0 QCOUNT=0 FLAGS=ClusterIP+Local+InternalLocal+non-routable",
+			"SVC: ID=1 ADDR=<auto>/TCP SLOT=2 BEID=2 COUNT=0 QCOUNT=0 FLAGS=ClusterIP+Local+InternalLocal+non-routable",
+			"SVC: ID=1 ADDR=<auto>/TCP SLOT=3 BEID=3 COUNT=0 QCOUNT=0 FLAGS=ClusterIP+Local+InternalLocal+non-routable",
+			"SVC: ID=1 ADDR=<auto>/TCP SLOT=4 BEID=4 COUNT=0 QCOUNT=0 FLAGS=ClusterIP+Local+InternalLocal+non-routable",
 		},
 		nil,
 	),
@@ -553,11 +582,12 @@ var proxyTestCases = []testCase{
 	),
 }
 
-var extraFrontendInternal = func() loadbalancer.L3n4Addr {
-	addr := extraFrontend
-	addr.Scope = loadbalancer.ScopeInternal
-	return addr
-}()
+var extraFrontendInternal = loadbalancer.NewL3n4Addr(
+	extraFrontend.Protocol(),
+	extraFrontend.AddrCluster(),
+	extraFrontend.Port(),
+	loadbalancer.ScopeInternal,
+)
 
 var miscFlagsTestCases = []testCase{
 	newTestCase(
@@ -634,7 +664,6 @@ var miscFlagsTestCases = []testCase{
 		func(svc *loadbalancer.Service, fe *loadbalancer.Frontend) (delete bool, bes []loadbalancer.Backend) {
 			fe.Type = HostPort
 			fe.Address = extraFrontendInternal
-			fe.Address.Scope = loadbalancer.ScopeInternal
 
 			return false, []loadbalancer.Backend{}
 		},
@@ -650,7 +679,6 @@ var miscFlagsTestCases = []testCase{
 		func(svc *loadbalancer.Service, fe *loadbalancer.Frontend) (delete bool, bes []loadbalancer.Backend) {
 			fe.Type = HostPort
 			fe.Address = extraFrontendInternal
-			fe.Address.Scope = loadbalancer.ScopeInternal
 
 			svc.ExtTrafficPolicy = loadbalancer.SVCTrafficPolicyLocal
 			svc.IntTrafficPolicy = loadbalancer.SVCTrafficPolicyCluster
@@ -1052,12 +1080,10 @@ func TestBPFOps(t *testing.T) {
 
 	// Enable features.
 	extCfg := loadbalancer.ExternalConfig{
-		ZoneMapper:            &option.DaemonConfig{},
-		EnableIPv4:            true,
-		EnableIPv6:            true,
-		KubeProxyReplacement:  true,
-		EnableHostPort:        true,
-		EnableSessionAffinity: true,
+		ZoneMapper:           &option.DaemonConfig{},
+		EnableIPv4:           true,
+		EnableIPv6:           true,
+		KubeProxyReplacement: true,
 	}
 
 	cfg, _ := loadbalancer.NewConfig(log, loadbalancer.DefaultUserConfig, loadbalancer.DeprecatedConfig{}, &option.DaemonConfig{})
@@ -1079,8 +1105,8 @@ func TestBPFOps(t *testing.T) {
 
 	// Insert node addrs used for NodePort/HostPort
 	db := statedb.New()
-	nodeAddrs, _ := tables.NewNodeAddressTable()
-	require.NoError(t, db.RegisterTable(nodeAddrs))
+	nodeAddrs, err := tables.NewNodeAddressTable(db)
+	require.NoError(t, err)
 	wtxn := db.WriteTxn(nodeAddrs)
 	for _, n := range nodePortAddrs {
 		na := tables.NodeAddress{
@@ -1102,11 +1128,20 @@ func TestBPFOps(t *testing.T) {
 				case autoAddr.String():
 					frontend.Address = addr
 				case zeroAddr.String():
-					frontend.Address.L4Addr = addr.L4Addr
 					if addr.IsIPv6() {
-						frontend.Address.AddrCluster = types.AddrClusterFrom(netip.IPv6Unspecified(), 0)
+						frontend.Address = loadbalancer.NewL3n4Addr(
+							addr.Protocol(),
+							types.AddrClusterFrom(netip.IPv6Unspecified(), 0),
+							addr.Port(),
+							addr.Scope(),
+						)
 					} else {
-						frontend.Address.AddrCluster = types.AddrClusterFrom(netip.IPv4Unspecified(), 0)
+						frontend.Address = loadbalancer.NewL3n4Addr(
+							addr.Protocol(),
+							types.AddrClusterFrom(netip.IPv4Unspecified(), 0),
+							addr.Port(),
+							addr.Scope(),
+						)
 					}
 				}
 

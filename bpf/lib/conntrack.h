@@ -17,6 +17,9 @@
 #include "signal.h"
 #include "ipfrag.h"
 
+/* Traffic is allowed/dropped based on user-defined policies. */
+DECLARE_CONFIG(bool, enable_extended_ip_protocols, "Pass traffic with extended IP protocols")
+
 enum ct_action {
 	ACTION_UNSPEC,
 	ACTION_CREATE,
@@ -36,7 +39,6 @@ enum ct_entry_type {
 	CT_ENTRY_SVC		= (1 << 2),
 };
 
-#ifdef ENABLE_IPV4
 struct ct_buffer4 {
 	struct ipv4_ct_tuple tuple;
 	struct ct_state ct_state;
@@ -44,9 +46,7 @@ struct ct_buffer4 {
 	int ret;
 	int l4_off;
 };
-#endif
 
-#ifdef ENABLE_IPV6
 struct ct_buffer6 {
 	struct ipv6_ct_tuple tuple;
 	struct ct_state ct_state;
@@ -54,14 +54,13 @@ struct ct_buffer6 {
 	int ret;
 	int l4_off;
 };
-#endif
 
 static __always_inline enum ct_action ct_tcp_select_action(union tcp_flags flags)
 {
 	if (unlikely(flags.value & (TCP_FLAG_RST | TCP_FLAG_FIN)))
 		return ACTION_CLOSE;
 
-	if (unlikely(flags.value & TCP_FLAG_SYN))
+	if (unlikely((flags.value & TCP_FLAG_SYN) && !(flags.value & TCP_FLAG_ACK)))
 		return ACTION_CREATE;
 
 	return ACTION_UNSPEC;
@@ -570,6 +569,12 @@ ct_extract_ports6(struct __ctx_buff *ctx, struct ipv6hdr *ip6, fraginfo_t fragin
 		return ipv6_load_l4_ports(ctx, ip6, fraginfo, off,
 					  dir, &tuple->dport);
 	default:
+		/* See comment in ct_extract_ports4. */
+		if (CONFIG(enable_extended_ip_protocols)) {
+			tuple->sport = 0;
+			tuple->dport = 0;
+			break;
+		}
 		/* Unsupported L4 protocol */
 		return DROP_CT_UNKNOWN_PROTO;
 	}
@@ -821,6 +826,12 @@ ct_extract_ports4(struct __ctx_buff *ctx, struct iphdr *ip4, fraginfo_t fraginfo
 		return ipv4_load_l4_ports(ctx, ip4, fraginfo, off,
 					  dir, &tuple->dport);
 	default:
+		/* Traffic is allowed/dropped based on user-defined policies. */
+		if (CONFIG(enable_extended_ip_protocols)) {
+			tuple->sport = 0;
+			tuple->dport = 0;
+			break;
+		}
 		/* Unsupported L4 protocol */
 		return DROP_CT_UNKNOWN_PROTO;
 	}

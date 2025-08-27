@@ -67,14 +67,20 @@ func (e *Endpoint) GetCiliumEndpointStatus() *cilium_v2.EndpointStatus {
 
 	logger := e.getLogger()
 
+	svcAccount := ""
+	if pod := e.GetPod(); pod != nil {
+		svcAccount = pod.Spec.ServiceAccountName
+	}
+
 	status := &cilium_v2.EndpointStatus{
 		ID:                  int64(e.ID),
 		ExternalIdentifiers: e.getModelEndpointIdentitiersRLocked(),
 		Identity:            getEndpointIdentity(identitymodel.CreateModel(e.SecurityIdentity)),
 		Networking:          getEndpointNetworking(logger, e.getModelNetworkingRLocked()),
 		State:               compressEndpointState(e.getModelCurrentStateRLocked()),
-		Encryption:          cilium_v2.EncryptionSpec{Key: int(node.GetEndpointEncryptKeyIndex(logger))},
+		Encryption:          cilium_v2.EncryptionSpec{Key: int(node.GetEndpointEncryptKeyIndex(logger, e.wgConfig))},
 		NamedPorts:          e.getNamedPortsModel(),
+		ServiceAccount:      svcAccount,
 	}
 
 	return status

@@ -26,7 +26,7 @@ func setup(tb testing.TB) {
 	ClusterOuterMapNameTestOverride("test")
 }
 
-func BenchmarkPerClusterCTMapUpdate(b *testing.B) {
+func BenchmarkPrivilegedPerClusterCTMapUpdate(b *testing.B) {
 
 	setup(b)
 
@@ -46,7 +46,7 @@ func BenchmarkPerClusterCTMapUpdate(b *testing.B) {
 	b.StopTimer()
 }
 
-func BenchmarkPerClusterCTMapLookup(b *testing.B) {
+func BenchmarkPrivilegedPerClusterCTMapLookup(b *testing.B) {
 
 	setup(b)
 
@@ -70,7 +70,7 @@ func BenchmarkPerClusterCTMapLookup(b *testing.B) {
 	b.StopTimer()
 }
 
-func TestPerClusterCTMaps(t *testing.T) {
+func TestPrivilegedPerClusterCTMaps(t *testing.T) {
 	setup(t)
 	logger := hivetest.Logger(t)
 
@@ -162,7 +162,7 @@ func TestPerClusterCTMaps(t *testing.T) {
 	require.NoError(t, maps.DeleteClusterCTMaps(cmtypes.ClusterIDMax), "Failed to delete maps")
 }
 
-func TestPerClusterCTMapsCleanup(t *testing.T) {
+func TestPrivilegedPerClusterCTMapsCleanup(t *testing.T) {
 	setup(t)
 	logger := hivetest.Logger(t)
 

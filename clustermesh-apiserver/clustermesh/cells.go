@@ -120,7 +120,19 @@ var Synchronization = cell.Module(
 		),
 		cell.Invoke(RegisterSynchronizer[*cilium_api_v2a1.CiliumEndpointSlice]),
 	),
+	cell.Invoke(registerSyncStateStop),
 )
+
+func registerSyncStateStop(lc cell.Lifecycle, ss syncstate.SyncState) {
+	lc.Append(
+		cell.Hook{
+			OnStart: func(cell.HookContext) error {
+				ss.Stop()
+				return nil
+			},
+		},
+	)
+}
 
 func registerClientsetValidator(lc cell.Lifecycle, client k8sClient.Clientset) {
 	lc.Append(cell.Hook{
@@ -136,7 +148,9 @@ func registerClientsetValidator(lc cell.Lifecycle, client k8sClient.Clientset) {
 }
 
 var pprofConfig = pprof.Config{
-	Pprof:        false,
-	PprofAddress: option.PprofAddress,
-	PprofPort:    option.PprofPortClusterMesh,
+	Pprof:                     false,
+	PprofAddress:              option.PprofAddress,
+	PprofPort:                 option.PprofPortClusterMesh,
+	PprofMutexProfileFraction: 0,
+	PprofBlockProfileRate:     0,
 }

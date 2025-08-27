@@ -1,7 +1,8 @@
 metadata:
   creationTimestamp: null
+  annotations:
+    cec.cilium.io/use-original-source-address: "true"
   labels:
-    cilium.io/use-original-source-address: "true"
     gateway.networking.k8s.io/gateway-name: mesh-weighted-backends
   name: echo
   namespace: gateway-conformance-mesh
@@ -94,7 +95,6 @@ spec:
             - name: gateway-conformance-mesh:echo-v2:8080
               weight: 30
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
-    connectTimeout: 5s
     edsClusterConfig:
       serviceName: gateway-conformance-mesh/echo-v1:8080
     name: gateway-conformance-mesh:echo-v1:8080
@@ -109,7 +109,6 @@ spec:
         useDownstreamProtocolConfig:
           http2ProtocolOptions: {}
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
-    connectTimeout: 5s
     edsClusterConfig:
       serviceName: gateway-conformance-mesh/echo-v2:8080
     name: gateway-conformance-mesh:echo-v2:8080

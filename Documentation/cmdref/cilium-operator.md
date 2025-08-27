@@ -14,6 +14,7 @@ cilium-operator [flags]
       --alibaba-cloud-vpc-id string                          Specific VPC ID for AlibabaCloud ENI. If not set use same VPC as operator
       --auto-create-cilium-pod-ip-pools map                  Automatically create CiliumPodIPPool resources on startup. Specify pools in the form of <pool>=ipv4-cidrs:<cidr>,[<cidr>...];ipv4-mask-size:<size> (multiple pools can also be passed by repeating the CLI flag)
       --aws-enable-prefix-delegation                         Allows operator to allocate prefixes to ENIs instead of individual IP addresses
+      --aws-pagination-enabled                               Enable pagination for AWS EC2 API requests. The default page size is 1000 items. (default true)
       --aws-release-excess-ips                               Enable releasing excess free IP addresses from AWS ENI.
       --aws-use-primary-address                              Allows for using primary address of the ENI for allocations on the node
       --azure-resource-group string                          Resource group to use for Azure IPAM
@@ -124,17 +125,20 @@ cilium-operator [flags]
       --mesh-auth-spire-agent-socket string                  The path for the SPIRE admin agent Unix socket. (default "/run/spire/sockets/agent/agent.sock")
       --mesh-auth-spire-server-address string                SPIRE server endpoint. (default "spire-server.spire.svc:8081")
       --mesh-auth-spire-server-connection-timeout duration   SPIRE server connection timeout. (default 10s)
+      --metrics-sampling-interval duration                   Set the internal metrics sampling interval (default 5m0s)
       --nodes-gc-interval duration                           GC interval for CiliumNodes (default 5m0s)
       --operator-api-serve-addr string                       Address to serve API requests (default "localhost:9234")
       --operator-k8s-client-burst int                        Burst value allowed for the K8s client (default 200)
       --operator-k8s-client-qps float32                      Queries per second limit for the K8s client (default 100)
       --operator-pprof                                       Enable serving pprof debugging API
       --operator-pprof-address string                        Address that pprof listens on (default "localhost")
+      --operator-pprof-block-profile-rate int                Enable goroutine blocking profiling and set the rate of sampled events in nanoseconds (set to 1 to sample all events [warning: performance overhead])
+      --operator-pprof-mutex-profile-fraction int            Enable mutex contention profiling and set the fraction of sampled events (set to 1 to sample all events)
       --operator-pprof-port uint16                           Port that pprof listens on (default 6061)
       --operator-prometheus-serve-addr string                Address to serve Prometheus metrics (default ":9963")
       --parallel-alloc-workers int                           Maximum number of parallel IPAM workers (default 50)
       --pod-restart-selector string                          cilium-operator will delete/restart any pods with these labels if the pod is not managed by Cilium. If this option is empty, then all pods may be restarted (default "k8s-app=kube-dns")
-      --policy-default-local-cluster                         Control whether policy rules assume by default the local cluster if not explicitly selected
+      --policy-default-local-cluster                         Control whether policy rules assume by default the local cluster if not explicitly selected (default true)
       --policy-secrets-namespace string                      Namespace where secrets used in TLS Interception will be synced to. (default "cilium-secrets")
       --remove-cilium-node-taints                            Remove node taint "node.cilium.io/agent-not-ready" from Kubernetes nodes once Cilium is up and running (default true)
       --set-cilium-is-up-condition                           Set CiliumIsUp Node condition to mark a Kubernetes Node that a Cilium pod is up and running in that node (default true)

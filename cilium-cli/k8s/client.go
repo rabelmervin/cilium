@@ -51,7 +51,9 @@ import (
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	ciliumv2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	ciliumClientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
+	slimcorev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	ciliumnetworkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned/typed/core/v1"
 	slim_networkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned/typed/networking/v1"
 	"github.com/cilium/cilium/pkg/safeio"
 	"github.com/cilium/cilium/pkg/versioncheck"
@@ -70,6 +72,7 @@ type Client struct {
 	ExtensionClientset        apiextensionsclientset.Interface // k8s api extension needed to retrieve CRDs
 	DynamicClientset          dynamic.Interface
 	CiliumClientset           ciliumClientset.Interface
+	SlimCoreV1Clientset       slim_corev1.CoreV1Interface
 	SlimNetworkingV1Clientset slim_networkingv1.NetworkingV1Interface
 	Config                    *rest.Config
 	RawConfig                 clientcmdapi.Config
@@ -122,6 +125,11 @@ func NewClient(contextName, kubeconfig, ciliumNamespace string, impersonateAs st
 		return nil, err
 	}
 
+	slimCoreV1Clientset, err := slim_corev1.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
 	slimNetworkingV1Clientset, err := slim_networkingv1.NewForConfig(config)
 	if err != nil {
 		return nil, err
@@ -144,6 +152,7 @@ func NewClient(contextName, kubeconfig, ciliumNamespace string, impersonateAs st
 		CiliumClientset:           ciliumClientset,
 		Clientset:                 clientset,
 		ExtensionClientset:        extensionClientset,
+		SlimCoreV1Clientset:       slimCoreV1Clientset,
 		SlimNetworkingV1Clientset: slimNetworkingV1Clientset,
 		Config:                    config,
 		DynamicClientset:          dynamicClientset,
@@ -671,7 +680,7 @@ func (c *Client) AutodetectFlavor(ctx context.Context) Flavor {
 		}
 	}
 
-	apiList, err := c.Clientset.Discovery().ServerGroups()
+	apiList, err := c.GetServerGroups()
 	if err == nil {
 		apiGroups := apiList.Groups
 		for i := range apiGroups {
@@ -703,6 +712,10 @@ func (c *Client) GetNode(ctx context.Context, name string, opts metav1.GetOption
 
 func (c *Client) ListNodes(ctx context.Context, options metav1.ListOptions) (*corev1.NodeList, error) {
 	return c.Clientset.CoreV1().Nodes().List(ctx, options)
+}
+
+func (c *Client) ListSlimNodes(ctx context.Context, options metav1.ListOptions) (*slimcorev1.NodeList, error) {
+	return c.SlimCoreV1Clientset.Nodes().List(ctx, options)
 }
 
 func (c *Client) PatchNode(ctx context.Context, nodeName string, pt types.PatchType, data []byte) (*corev1.Node, error) {
@@ -1234,4 +1247,46 @@ func (c *Client) DeleteGeneric(ctx context.Context, obj Object) error {
 	dynamicClient := c.DynamicClientset.Resource(resource).Namespace(obj.GetNamespace())
 
 	return dynamicClient.Delete(ctx, obj.GetName(), metav1.DeleteOptions{})
+}
+
+func (c *Client) GetServerGroups() (*metav1.APIGroupList, error) {
+	return c.Clientset.Discovery().ServerGroups()
+}
+
+// OpenshiftClusterVersion represents the OpenShift ClusterVersion resource
+type OpenshiftClusterVersion struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Status            ClusterVersionStatus `json:"status,omitempty"`
+}
+
+// ClusterVersionStatus represents the status of the OpenShift ClusterVersion
+type ClusterVersionStatus struct {
+	Desired ClusterVersionUpdate `json:"desired,omitempty"`
+}
+
+// ClusterVersionUpdate represents the desired version information
+type ClusterVersionUpdate struct {
+	Version string `json:"version,omitempty"`
+}
+
+// GetOpenshiftClusterVersion retrieves the OpenShift ClusterVersion resource
+func (c *Client) GetOpenshiftClusterVersion(ctx context.Context) (*OpenshiftClusterVersion, error) {
+	gvr := schema.GroupVersionResource{
+		Group:    "config.openshift.io",
+		Version:  "v1",
+		Resource: "clusterversions",
+	}
+
+	unstructuredObj, err := c.DynamicClientset.Resource(gvr).Get(ctx, "version", metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ClusterVersion: %w", err)
+	}
+
+	var cv OpenshiftClusterVersion
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstructuredObj.UnstructuredContent(), &cv); err != nil {
+		return nil, fmt.Errorf("failed to convert ClusterVersion: %w", err)
+	}
+
+	return &cv, nil
 }

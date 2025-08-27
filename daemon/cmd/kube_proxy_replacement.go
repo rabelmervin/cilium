@@ -30,6 +30,7 @@ import (
 	"github.com/cilium/cilium/pkg/mountinfo"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/safeio"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 // initKubeProxyReplacementOptions will grok the global config and determine
@@ -41,7 +42,7 @@ import (
 //
 // if this function cannot determine the strictness an error is returned and the boolean
 // is false. If an error is returned the boolean is of no meaning.
-func initKubeProxyReplacementOptions(logger *slog.Logger, sysctl sysctl.Sysctl, tunnelConfig tunnel.Config, lbConfig loadbalancer.Config, kprCfg kpr.KPRConfig) error {
+func initKubeProxyReplacementOptions(logger *slog.Logger, sysctl sysctl.Sysctl, tunnelConfig tunnel.Config, lbConfig loadbalancer.Config, kprCfg kpr.KPRConfig, wgCfg wgTypes.WireguardConfig) error {
 	if !kprCfg.EnableNodePort {
 		option.Config.EnableHostLegacyRouting = true
 	}
@@ -83,7 +84,7 @@ func initKubeProxyReplacementOptions(logger *slog.Logger, sysctl sysctl.Sysctl, 
 
 		dsrIPIP := lbConfig.LoadBalancerUsesDSR() && lbConfig.DSRDispatch == loadbalancer.DSRDispatchIPIP
 		if dsrIPIP && option.Config.NodePortAcceleration == option.NodePortAccelerationDisabled {
-			return fmt.Errorf("DSR dispatch mode %q currently only available under XDP acceleration", lbConfig.DSRDispatch)
+			option.Config.EnableIPIPDevices = true
 		}
 
 		if (option.Config.LoadBalancerRSSv4CIDR != "" || option.Config.LoadBalancerRSSv6CIDR != "") && !dsrIPIP {
@@ -92,12 +93,12 @@ func initKubeProxyReplacementOptions(logger *slog.Logger, sysctl sysctl.Sysctl, 
 		}
 
 		if option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled &&
-			option.Config.EnableWireguard && option.Config.EncryptNode {
+			wgCfg.Enabled() && option.Config.EncryptNode {
 			logger.Warn(
 				fmt.Sprintf(
 					"With %s: %s and %s, %s enabled, N/S Loadbalancer traffic won't be encrypted "+
 						"when an intermediate node redirects a request to another node where a selected backend is running.",
-					option.NodePortAcceleration, option.Config.NodePortAcceleration, option.EnableWireguard, option.EncryptNode),
+					option.NodePortAcceleration, option.Config.NodePortAcceleration, wgTypes.EnableWireguard, option.EncryptNode),
 				logfields.Hint,
 				"Disable XDP acceleration to encrypt N/S Loadbalancer traffic.")
 		}
@@ -135,6 +136,7 @@ func initKubeProxyReplacementOptions(logger *slog.Logger, sysctl sysctl.Sysctl, 
 					lbConfig.LBMode, loadbalancer.DSRDispatchIPIP)
 			}
 			option.Config.EnableHealthDatapath = true
+			option.Config.EnableIPIPDevices = true
 		}
 	}
 
@@ -142,18 +144,15 @@ func initKubeProxyReplacementOptions(logger *slog.Logger, sysctl sysctl.Sysctl, 
 		// InstallNoConntrackIptRules can only be enabled when Cilium is
 		// running in full KPR mode as otherwise conntrack would be
 		// required for NAT operations
-		if !(kprCfg.EnableHostPort && kprCfg.EnableNodePort && kprCfg.EnableExternalIPs && kprCfg.EnableSocketLB) {
-			return fmt.Errorf("%s requires the agent to run with %s=%s.",
-				option.InstallNoConntrackIptRules, option.KubeProxyReplacement, option.KubeProxyReplacementTrue)
+		if !(kprCfg.EnableNodePort && kprCfg.EnableSocketLB) {
+			return fmt.Errorf("%s requires the agent to run with %s.",
+				option.InstallNoConntrackIptRules, option.KubeProxyReplacement)
 		}
 
 		if option.Config.MasqueradingEnabled() && !option.Config.EnableBPFMasquerade {
 			return fmt.Errorf("%s requires the agent to run with %s.",
 				option.InstallNoConntrackIptRules, option.EnableBPFMasquerade)
 		}
-	}
-	if option.Config.BPFSocketLBHostnsOnly {
-		option.Config.EnableSocketLBTracing = false
 	}
 
 	if !kprCfg.EnableSocketLB {
@@ -181,15 +180,13 @@ func probeKubeProxyReplacementOptions(logger *slog.Logger, lbConfig loadbalancer
 			return err
 		}
 
-		if option.Config.EnableRecorder {
-			if probes.HaveProgramHelper(logger, ebpf.XDP, asm.FnKtimeGetBootNs) != nil {
-				return fmt.Errorf("pcap recorder --%s datapath needs kernel 5.8.0 or newer", option.EnableRecorder)
-			}
-		}
-
 		if option.Config.EnableHealthDatapath {
 			if probes.HaveProgramHelper(logger, ebpf.CGroupSockAddr, asm.FnGetsockopt) != nil {
 				option.Config.EnableHealthDatapath = false
+				if !option.Config.EnableIPIPTermination &&
+					option.Config.NodePortAcceleration != option.NodePortAccelerationDisabled {
+					option.Config.EnableIPIPDevices = false
+				}
 				logger.Info("BPF load-balancer health check datapath needs kernel 5.12.0 or newer. Disabling BPF load-balancer health check datapath.")
 			}
 		}
@@ -274,8 +271,8 @@ func finishKubeProxyReplacementInit(logger *slog.Logger, sysctl sysctl.Sysctl, d
 		case option.Config.IptablesMasqueradingEnabled():
 			msg = fmt.Sprintf("BPF host routing requires %s.", option.EnableBPFMasquerade)
 		// KPR=true is needed or we might rely on netfilter.
-		case kprCfg.KubeProxyReplacement != option.KubeProxyReplacementTrue:
-			msg = fmt.Sprintf("BPF host routing requires %s=%s.", option.KubeProxyReplacement, option.KubeProxyReplacementTrue)
+		case !kprCfg.KubeProxyReplacement:
+			msg = fmt.Sprintf("BPF host routing requires %s.", option.KubeProxyReplacement)
 		}
 		if msg != "" {
 			option.Config.EnableHostLegacyRouting = true

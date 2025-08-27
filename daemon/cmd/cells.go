@@ -45,7 +45,9 @@ import (
 	identity "github.com/cilium/cilium/pkg/identity/cell"
 	ipamcell "github.com/cilium/cilium/pkg/ipam/cell"
 	ipcache "github.com/cilium/cilium/pkg/ipcache/cell"
+	ipmasq "github.com/cilium/cilium/pkg/ipmasq/cell"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
+	"github.com/cilium/cilium/pkg/k8s/hostfirewallbypass"
 	k8sSynced "github.com/cilium/cilium/pkg/k8s/synced"
 	"github.com/cilium/cilium/pkg/k8s/watchers"
 	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
@@ -56,6 +58,7 @@ import (
 	loadbalancer_cell "github.com/cilium/cilium/pkg/loadbalancer/cell"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maglev"
+	ipmasqmaps "github.com/cilium/cilium/pkg/maps/ipmasq"
 	"github.com/cilium/cilium/pkg/maps/metricsmap"
 	natStats "github.com/cilium/cilium/pkg/maps/nat/stats"
 	"github.com/cilium/cilium/pkg/maps/ratelimitmap"
@@ -71,7 +74,6 @@ import (
 	policyK8s "github.com/cilium/cilium/pkg/policy/k8s"
 	"github.com/cilium/cilium/pkg/pprof"
 	"github.com/cilium/cilium/pkg/proxy"
-	"github.com/cilium/cilium/pkg/recorder"
 	shell "github.com/cilium/cilium/pkg/shell/server"
 	"github.com/cilium/cilium/pkg/signal"
 	"github.com/cilium/cilium/pkg/source"
@@ -103,6 +105,10 @@ var (
 
 		// Provides Clientset, API for accessing Kubernetes objects.
 		k8sClient.Cell,
+
+		// Provides optional configuration callback to bypass
+		// host firewall when accessing Kubernetes objects.
+		hostfirewallbypass.Cell,
 
 		// Provide the logic to map DNS names matching Kubernetes services to the
 		// corresponding ClusterIP, without depending on CoreDNS. Leveraged by etcd
@@ -253,6 +259,12 @@ var (
 		// Egress Gateway allows originating traffic from specific IPv4 addresses.
 		egressgateway.Cell,
 
+		// Provides the BPF ip-masq-agent maps
+		ipmasqmaps.Cell,
+
+		// Provides the BPF ip-masq-agent implementation, which is responsible for managing IP masquerading rules
+		ipmasq.Cell,
+
 		// Provides KPRConfig
 		kpr.Cell,
 
@@ -291,9 +303,6 @@ var (
 
 		// K8s Watcher provides the core k8s watchers
 		watchers.Cell,
-
-		// Provide pcap recorder
-		recorder.Cell,
 
 		// Provides a wrapper of the cilium config that can be watched dynamically
 		dynamicconfig.Cell,
@@ -367,9 +376,11 @@ func configureAPIServer(cfg *option.DaemonConfig, s *server.Server, db *statedb.
 }
 
 var pprofConfig = pprof.Config{
-	Pprof:        false,
-	PprofAddress: option.PprofAddressAgent,
-	PprofPort:    option.PprofPortAgent,
+	Pprof:                     false,
+	PprofAddress:              option.PprofAddressAgent,
+	PprofPort:                 option.PprofPortAgent,
+	PprofMutexProfileFraction: 0,
+	PprofBlockProfileRate:     0,
 }
 
 // resourceGroups are all of the core Kubernetes and Cilium resource groups

@@ -20,7 +20,6 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 
 	daemonk8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/datapath/tables"
@@ -48,7 +47,7 @@ import (
 var debug = flag.Bool("debug", false, "Enable debug logging")
 
 func TestScript(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer testutils.GoleakVerifyNone(t)
 
 	version.Force(k8sTestutils.DefaultVersion)
 	nodeTypes.SetName("testnode")
@@ -74,7 +73,7 @@ func TestScript(t *testing.T) {
 
 				lbcell.Cell,
 
-				node.LocalNodeStoreCell,
+				node.LocalNodeStoreTestCell,
 				maglev.Cell,
 				cell.Provide(
 					source.NewSources,
@@ -91,7 +90,7 @@ func TestScript(t *testing.T) {
 					func() kpr.KPRConfig {
 						return kpr.KPRConfig{
 							EnableNodePort:       true,
-							KubeProxyReplacement: option.KubeProxyReplacementTrue,
+							KubeProxyReplacement: true,
 						}
 					},
 					func() redirectpolicy.TestSkipLBMap {
@@ -102,7 +101,6 @@ func TestScript(t *testing.T) {
 						return &fakeSkipLBMap{}
 					},
 				),
-				cell.Invoke(statedb.RegisterTable[tables.NodeAddress]),
 			)
 
 			flags := pflag.NewFlagSet("", pflag.ContinueOnError)

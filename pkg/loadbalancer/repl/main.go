@@ -84,7 +84,7 @@ var Hive = hive.New(
 	daemonk8s.ResourcesCell,
 	daemonk8s.TablesCell,
 	maglev.Cell,
-	node.LocalNodeStoreCell,
+	node.LocalNodeStoreTestCell,
 	metrics.Cell,
 	cell.Config(loadbalancer.TestConfig{}),
 	cell.Provide(source.NewSources),
@@ -99,13 +99,12 @@ var Hive = hive.New(
 		},
 		func() kpr.KPRConfig {
 			return kpr.KPRConfig{
-				KubeProxyReplacement: option.KubeProxyReplacementTrue,
+				KubeProxyReplacement: true,
 			}
 		},
 		func(cfg loadbalancer.TestConfig) *loadbalancer.TestConfig {
 			return &cfg
 		},
 	),
-	cell.Invoke(statedb.RegisterTable[tables.NodeAddress]),
 	lbcell.Cell,
 )

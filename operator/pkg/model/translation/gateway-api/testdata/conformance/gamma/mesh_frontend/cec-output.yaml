@@ -1,7 +1,8 @@
 metadata:
   creationTimestamp: null
+  annotations:
+    cec.cilium.io/use-original-source-address: "true"
   labels:
-    cilium.io/use-original-source-address: "true"
     gateway.networking.k8s.io/gateway-name: mesh-split-v1
   name: echo-v2
   namespace: gateway-conformance-mesh
@@ -100,7 +101,6 @@ spec:
           maxStreamDuration:
             maxStreamDuration: 0s
   - '@type': type.googleapis.com/envoy.config.cluster.v3.Cluster
-    connectTimeout: 5s
     edsClusterConfig:
       serviceName: gateway-conformance-mesh/echo-v2:80
     name: gateway-conformance-mesh:echo-v2:80

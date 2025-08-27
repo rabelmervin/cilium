@@ -22,6 +22,7 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maglev"
+	"github.com/cilium/cilium/pkg/u8proto"
 )
 
 type lbmapsParams struct {
@@ -102,6 +103,7 @@ type sockRevNatMaps interface {
 	UpdateSockRevNat(cookie uint64, addr net.IP, port uint16, revNatIndex uint16) error
 	DeleteSockRevNat(cookie uint64, addr net.IP, port uint16) error
 	ExistsSockRevNat(cookie uint64, addr net.IP, port uint16) bool
+	SockRevNat() (*bpf.Map, *bpf.Map)
 }
 
 // LBMaps defines the map operations performed by the reconciliation.
@@ -338,25 +340,17 @@ func (r *BPFLBMaps) allMaps() ([]mapDesc, []mapDesc) {
 	mapsToCreate := []mapDesc{}
 	mapsToDelete := []mapDesc{}
 
-	if r.ExtCfg.EnableSessionAffinity {
-		mapsToCreate = append(mapsToCreate, affinityMap)
-	} else {
-		mapsToDelete = append(mapsToDelete, affinityMap)
-	}
+	mapsToCreate = append(mapsToCreate, affinityMap)
 
-	if r.ExtCfg.EnableSVCSourceRangeCheck {
-		if r.ExtCfg.EnableIPv4 {
-			mapsToCreate = append(mapsToCreate, v4SourceRangeMap)
-		} else {
-			mapsToDelete = append(mapsToDelete, v4SourceRangeMap)
-		}
-		if r.ExtCfg.EnableIPv6 {
-			mapsToCreate = append(mapsToCreate, v6SourceRangeMap)
-		} else {
-			mapsToDelete = append(mapsToDelete, v6SourceRangeMap)
-		}
+	if r.ExtCfg.EnableIPv4 {
+		mapsToCreate = append(mapsToCreate, v4SourceRangeMap)
 	} else {
-		mapsToDelete = append(mapsToDelete, v4SourceRangeMap, v6SourceRangeMap)
+		mapsToDelete = append(mapsToDelete, v4SourceRangeMap)
+	}
+	if r.ExtCfg.EnableIPv6 {
+		mapsToCreate = append(mapsToCreate, v6SourceRangeMap)
+	} else {
+		mapsToDelete = append(mapsToDelete, v6SourceRangeMap)
 	}
 
 	if r.ExtCfg.EnableIPv4 {
@@ -762,6 +756,10 @@ func (r *BPFLBMaps) ExistsSockRevNat(cookie uint64, addr net.IP, port uint16) bo
 	return false
 }
 
+func (r *BPFLBMaps) SockRevNat() (*bpf.Map, *bpf.Map) {
+	return r.sockRevNat4Map, r.sockRevNat6Map
+}
+
 // MaglevInnerMap represents a maglev inner map.
 type MaglevInnerMap struct {
 	*ebpf.Map
@@ -986,6 +984,10 @@ func (f *FaultyLBMaps) DumpMaglev(cb func(MaglevOuterKey, MaglevOuterVal, Maglev
 
 func (f *FaultyLBMaps) ExistsSockRevNat(cookie uint64, addr net.IP, port uint16) bool {
 	return f.impl.ExistsSockRevNat(cookie, addr, port)
+}
+
+func (f *FaultyLBMaps) SockRevNat() (*bpf.Map, *bpf.Map) {
+	return f.impl.SockRevNat()
 }
 
 // LookupBackend implements LBMaps.
@@ -1258,6 +1260,10 @@ func (f *FakeLBMaps) ExistsSockRevNat(cookie uint64, addr net.IP, port uint16) b
 	return f.sockRevNat.exists(key)
 }
 
+func (f *FakeLBMaps) SockRevNat() (*bpf.Map, *bpf.Map) {
+	return nil, nil
+}
+
 // LookupBackend implements LBMaps.
 func (f *FakeLBMaps) LookupBackend(key BackendKey) (BackendValue, error) {
 	v, err := f.be.lookup(key)
@@ -1335,15 +1341,36 @@ func (s *mapSnapshots) snapshot(lbmaps LBMaps) error {
 	return nil
 }
 
-func (s *mapSnapshots) restore(lbmaps LBMaps) (err error) {
+// restore the snapshot. If [anyProto] is true the protocol for services and backends is
+// ignored and 'ANY' is used instead. This is for testing migration from Cilium version
+// that did not support protocol differentiation.
+func (s *mapSnapshots) restore(lbmaps LBMaps, anyProto bool) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, kv := range s.services {
+		key := kv.key.(ServiceKey)
+		if anyProto {
+			switch k := key.(type) {
+			case *Service4Key:
+				k.Proto = uint8(u8proto.ANY)
+			case *Service6Key:
+				k.Proto = uint8(u8proto.ANY)
+			}
+		}
 		err = errors.Join(err, lbmaps.UpdateService(kv.key.(ServiceKey), kv.value.(ServiceValue)))
 	}
 	for _, kv := range s.backends {
-		err = errors.Join(err, lbmaps.UpdateBackend(kv.key.(BackendKey), kv.value.(BackendValue)))
+		value := kv.value.(BackendValue)
+		if anyProto {
+			switch v := value.(type) {
+			case *Backend4ValueV3:
+				v.Proto = u8proto.ANY
+			case *Backend6ValueV3:
+				v.Proto = u8proto.ANY
+			}
+		}
+		err = errors.Join(err, lbmaps.UpdateBackend(kv.key.(BackendKey), value))
 	}
 	for _, kv := range s.revNat {
 		err = errors.Join(err, lbmaps.UpdateRevNat(kv.key.(RevNatKey), kv.value.(RevNatValue)))

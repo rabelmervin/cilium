@@ -213,6 +213,9 @@ const (
 	// PodRestartSelector specify the labels contained in the pod that needs to be restarted before the node can be de-stained
 	// default values: k8s-app=kube-dns
 	PodRestartSelector = "pod-restart-selector"
+
+	// AWSPaginationEnabled toggles pagination for AWS EC2 API requests
+	AWSPaginationEnabled = "aws-pagination-enabled"
 )
 
 // OperatorConfig is the configuration used by the operator.
@@ -291,7 +294,7 @@ type OperatorConfig struct {
 
 	// KubeProxyReplacement or NodePort are required to implement cluster
 	// Ingress (or equivalent Gateway API functionality)
-	KubeProxyReplacement string
+	KubeProxyReplacement bool
 	EnableNodePort       bool
 
 	// AWS options
@@ -392,6 +395,9 @@ type OperatorConfig struct {
 
 	// PodRestartSelector specify the labels contained in the pod that needs to be restarted before the node can be de-stained
 	PodRestartSelector string
+
+	// AWSPaginationEnabled toggles pagination for AWS EC2 API requests
+	AWSPaginationEnabled bool
 }
 
 // Populate sets all options with the values from viper.
@@ -442,7 +448,7 @@ func (c *OperatorConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	c.ParallelAllocWorkers = vp.GetInt64(ParallelAllocWorkers)
 
 	// Gateways and Ingress
-	c.KubeProxyReplacement = vp.GetString(KubeProxyReplacement)
+	c.KubeProxyReplacement = vp.GetBool(KubeProxyReplacement)
 	c.EnableNodePort = vp.GetBool(EnableNodePort)
 
 	// AWS options
@@ -453,6 +459,7 @@ func (c *OperatorConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	c.EC2APIEndpoint = vp.GetString(EC2APIEndpoint)
 	c.ExcessIPReleaseDelay = vp.GetInt(ExcessIPReleaseDelay)
 	c.ENIGarbageCollectionInterval = vp.GetDuration(ENIGarbageCollectionInterval)
+	c.AWSPaginationEnabled = vp.GetBool(AWSPaginationEnabled)
 
 	// Azure options
 

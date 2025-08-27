@@ -14,6 +14,7 @@
 
 #define IS_BPF_LXC 1
 
+#define EFFECTIVE_EP_ID LXC_ID
 #define EVENT_SOURCE LXC_ID
 
 #define USE_LOOPBACK_LB		1
@@ -106,6 +107,13 @@ static __always_inline int __per_packet_lb_svc_xlate_4(void *ctx, struct iphdr *
 			proxy_port = (__u16)svc->l7_lb_proxy_port;
 			goto skip_service_lookup;
 		}
+		/* We land here when socket-LB is enabled but we also have ENABLE_L7_LB.
+		 * Given in socket-LB we skip translation, we also need to do it here as
+		 * otherwise we end up picking a backend in the per-packet handling which
+		 * we want to avoid for E/W traffic.
+		 */
+		if (lb4_svc_is_l7_punt_proxy(svc))
+			goto skip_service_lookup;
 #endif /* ENABLE_L7_LB */
 		/* When socket-LB is enabled, local-redirect services are load-balanced in
 		 * bpf_sock. In some cases, load-balancing can be skipped for certain local
@@ -180,6 +188,9 @@ static __always_inline int __per_packet_lb_svc_xlate_6(void *ctx, struct ipv6hdr
 			proxy_port = (__u16)svc->l7_lb_proxy_port;
 			goto skip_service_lookup;
 		}
+		/* See comment in __per_packet_lb_svc_xlate_4. */
+		if (lb6_svc_is_l7_punt_proxy(svc))
+			goto skip_service_lookup;
 #endif /* ENABLE_L7_LB */
 		/* See comment in __per_packet_lb_svc_xlate_4. */
 #if defined(ENABLE_LOCAL_REDIRECT_POLICY) && defined(ENABLE_SOCKET_LB_FULL)
@@ -403,7 +414,6 @@ int NAME(struct __ctx_buff *ctx)						\
 	return ret;								\
 }
 
-#ifdef ENABLE_CUSTOM_CALLS
 /* Private per-EP map for tail calls to user-defined programs. When custom calls
  * are enabled, a map named cilium_calls_custom_XXXXX will be pinned to bpffs
  * when loading the endpoint program.
@@ -421,6 +431,7 @@ struct {
 #define CUSTOM_CALLS_IDX_IPV6_INGRESS	2
 #define CUSTOM_CALLS_IDX_IPV6_EGRESS	3
 
+#ifdef ENABLE_CUSTOM_CALLS
 /* Encode return value and identity into cb buffer. This is used before
  * executing tail calls to custom programs. "ret" is the return value supposed
  * to be returned to the kernel, needed by the callee to preserve the datapath
@@ -447,7 +458,6 @@ encode_custom_prog_meta(struct __ctx_buff *ctx, int ret, __u32 identity)
 }
 #endif
 
-#ifdef ENABLE_IPV6
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, __u32);
@@ -455,6 +465,7 @@ struct {
 	__uint(max_entries, 1);
 } cilium_tail_call_buffer6 __section_maps_btf;
 
+#ifdef ENABLE_IPV6
 /* Handle egress IPv6 traffic from a container after service translation has been done
  * either at the socket level or by the caller.
  * In the case of the caller doing the service translation it passes in state via CB,
@@ -680,7 +691,7 @@ ct_recreate6:
 	 */
 	if (*dst_sec_identity == HOST_ID) {
 		ctx_store_meta(ctx, CB_FROM_HOST, 0);
-		ret = tail_call_policy(ctx, HOST_EP_ID);
+		ret = tail_call_policy(ctx, CONFIG(host_ep_id));
 
 		/* return fine-grained error: */
 		return DROP_HOST_NOT_READY;
@@ -745,6 +756,9 @@ ct_recreate6:
 		int oif = 0;
 
 		ret = fib_redirect_v6(ctx, ETH_HLEN, ip6, false, false, ext_err, &oif);
+		/* Error handling for local routes - just pass the packet to the kernel stack */
+		if (ret == DROP_NO_FIB && *ext_err == BPF_FIB_LKUP_RET_NOT_FWDED)
+			goto pass_to_stack;
 		if (fib_ok(ret))
 			send_trace_notify(ctx, TRACE_TO_NETWORK, SECLABEL_IPV6,
 					  *dst_sec_identity, TRACE_EP_ID_UNKNOWN, oif,
@@ -877,7 +891,6 @@ int tail_handle_ipv6(struct __ctx_buff *ctx)
 }
 #endif /* ENABLE_IPV6 */
 
-#ifdef ENABLE_IPV4
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, __u32);
@@ -885,6 +898,7 @@ struct {
 	__uint(max_entries, 1);
 } cilium_tail_call_buffer4 __section_maps_btf;
 
+#ifdef ENABLE_IPV4
 /* Handle egress IPv4 traffic from a container after service translation has been done
  * either at the socket level or by the caller.
  * In the case of the caller doing the service translation it passes in state via CB,
@@ -1148,7 +1162,7 @@ ct_recreate4:
 	 */
 	if (*dst_sec_identity == HOST_ID) {
 		ctx_store_meta(ctx, CB_FROM_HOST, 0);
-		ret = tail_call_policy(ctx, HOST_EP_ID);
+		ret = tail_call_policy(ctx, CONFIG(host_ep_id));
 
 		/* report fine-grained error: */
 		return DROP_HOST_NOT_READY;
@@ -1299,6 +1313,12 @@ skip_vtep:
 		int oif = 0;
 
 		ret = fib_redirect_v4(ctx, ETH_HLEN, ip4, false, false, ext_err, &oif);
+		/* Error handling for local routes - just pass the packet to the kernel stack */
+		if (ret == DROP_NO_FIB && *ext_err == BPF_FIB_LKUP_RET_NOT_FWDED) {
+			if (!revalidate_data(ctx, &data, &data_end, &ip4))
+				return DROP_INVALID;
+			goto pass_to_stack;
+		}
 		if (fib_ok(ret))
 			send_trace_notify(ctx, TRACE_TO_NETWORK, SECLABEL_IPV4,
 					  *dst_sec_identity, TRACE_EP_ID_UNKNOWN, oif,
@@ -2387,7 +2407,7 @@ int cil_to_container(struct __ctx_buff *ctx)
 		ctx_store_meta(ctx, CB_FROM_HOST, 1);
 		ctx_store_meta(ctx, CB_DST_ENDPOINT_ID, LXC_ID);
 
-		ret = tail_call_policy(ctx, HOST_EP_ID);
+		ret = tail_call_policy(ctx, CONFIG(host_ep_id));
 		return send_drop_notify(ctx, identity, sec_label, LXC_ID,
 					DROP_HOST_NOT_READY, METRIC_INGRESS);
 	}

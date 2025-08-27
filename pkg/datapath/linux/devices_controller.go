@@ -49,11 +49,6 @@ var DevicesControllerCell = cell.Module(
 		tables.NewRouteTable,
 		tables.NewNeighborTable,
 	),
-	cell.Invoke(
-		statedb.RegisterTable[*tables.Device],
-		statedb.RegisterTable[*tables.Route],
-		statedb.RegisterTable[*tables.Neighbor],
-	),
 
 	cell.Provide(
 		newDevicesController,
@@ -68,7 +63,7 @@ var DevicesControllerCell = cell.Module(
 )
 
 func (c DevicesConfig) Flags(flags *pflag.FlagSet) {
-	flags.StringSlice(option.Devices, []string{}, "List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'")
+	flags.StringSlice(option.Devices, []string{}, "List of devices facing cluster/external network (used for BPF NodePort, BPF masquerading and host firewall); supports '+' as wildcard in device name, e.g. 'eth+'; support '!' to exclude devices, e.g. '!eth+' excludes any device with prefix 'eth'. Note '!' says nothing about which ones to include. A device must match other criteria to be selected; The filters are matched in order and whatever matched first wins.")
 
 	flags.Bool(option.ForceDeviceDetection, false, "Forces the auto-detection of devices, even if specific devices are explicitly listed")
 }
@@ -481,7 +476,8 @@ func (dc *devicesController) processBatch(txn statedb.WriteTxn, batch map[int][]
 				r.Src, _ = netip.AddrFromSlice(u.Src)
 				r.Gw, _ = netip.AddrFromSlice(u.Gw)
 
-				if u.Type == unix.RTM_NEWROUTE {
+				switch u.Type {
+				case unix.RTM_NEWROUTE:
 					_, _, err := dc.params.RouteTable.Insert(txn, &r)
 					if err != nil {
 						dc.log.Warn("Failed to insert route",
@@ -489,7 +485,7 @@ func (dc *devicesController) processBatch(txn statedb.WriteTxn, batch map[int][]
 							logfields.Route, r,
 						)
 					}
-				} else if u.Type == unix.RTM_DELROUTE {
+				case unix.RTM_DELROUTE:
 					_, _, err := dc.params.RouteTable.Delete(txn, &r)
 					if err != nil {
 						dc.log.Warn("Failed to delete route",
@@ -520,7 +516,8 @@ func (dc *devicesController) processBatch(txn statedb.WriteTxn, batch map[int][]
 				}
 				n.IPAddr, _ = netip.AddrFromSlice(u.IP)
 
-				if u.Type == unix.RTM_NEWNEIGH {
+				switch u.Type {
+				case unix.RTM_NEWNEIGH:
 					_, _, err := dc.params.NeighborTable.Insert(txn, &n)
 					if err != nil {
 						dc.log.Warn("Failed to insert neighbor",
@@ -528,7 +525,7 @@ func (dc *devicesController) processBatch(txn statedb.WriteTxn, batch map[int][]
 							logfields.Neighbor, n,
 						)
 					}
-				} else if u.Type == unix.RTM_DELNEIGH {
+				case unix.RTM_DELNEIGH:
 					_, _, err := dc.params.NeighborTable.Delete(txn, &n)
 					if err != nil {
 						dc.log.Warn("Failed to delete neighbor",
@@ -624,11 +621,12 @@ func (dc *devicesController) isSelectedDevice(d *tables.Device, txn statedb.Writ
 	}
 
 	// If user specified devices or wildcards, then skip the device if it doesn't match.
-	// If the device does match and user not requested auto detection, then skip further checks.
-	// If the device does match and user requested auto detection, then continue to further checks.
+	// If the device does not match and user not requested auto detection, then skip further checks.
+	// If the device does not match and user requested auto detection, then continue to further checks.
 	if dc.filter.NonEmpty() {
-		if dc.filter.Match(d.Name) {
-			return true, ""
+		matched, reverse := dc.filter.Match(d.Name)
+		if matched {
+			return !reverse, ""
 		}
 		if !dc.enforceAutoDetection {
 			return false, fmt.Sprintf("not matching user filter %v", dc.filter)

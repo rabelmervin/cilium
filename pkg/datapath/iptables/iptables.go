@@ -33,6 +33,7 @@ import (
 	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/datapath/linux/sysctl"
 	"github.com/cilium/cilium/pkg/datapath/tables"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/fqdn/proxy/ipfamily"
@@ -305,6 +306,8 @@ type params struct {
 	JobGroup job.Group
 	DB       *statedb.DB
 	Devices  statedb.Table[*tables.Device]
+
+	TunnelCfg tunnel.Config
 }
 
 func newIptablesManager(p params) datapath.IptablesManager {
@@ -589,6 +592,51 @@ func (m *Manager) iptProxyRule(rules string, prog runnable, l4proto, ip string, 
 	return prog.runProg(rule)
 }
 
+func (m *Manager) installTunnelNoTrackRules(ip4tables, ip6tables runnable) error {
+	port := m.sharedCfg.TunnelPort
+
+	if !m.sharedCfg.TunnelingEnabled || port == 0 {
+		return nil
+	}
+
+	input := []string{
+		"-t", "raw",
+		"-A", ciliumPreRawChain,
+		"-p", "udp",
+		"--dport", strconv.Itoa(int(port)),
+		"-m", "comment", "--comment", "cilium: NOTRACK for tunnel traffic",
+		"-j", "CT", "--notrack",
+	}
+	output := []string{
+		"-t", "raw",
+		"-A", ciliumOutputRawChain,
+		"-p", "udp",
+		"--dport", strconv.Itoa(int(port)),
+		"-m", "comment", "--comment", "cilium: NOTRACK for tunnel traffic",
+		"-j", "CT", "--notrack",
+	}
+
+	if m.sharedCfg.EnableIPv4 && ip4tables != nil {
+		if err := ip4tables.runProg(input); err != nil {
+			return err
+		}
+		if err := ip4tables.runProg(output); err != nil {
+			return err
+		}
+	}
+
+	if m.sharedCfg.EnableIPv6 && ip6tables != nil {
+		if err := ip6tables.runProg(input); err != nil {
+			return err
+		}
+		if err := ip6tables.runProg(output); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (m *Manager) installStaticProxyRules() error {
 	// match traffic to a proxy (upper 16 bits has the proxy port, which is masked out)
 	matchToProxy := fmt.Sprintf("%#08x/%#08x", linux_defaults.MagicMarkIsToProxy, linux_defaults.MagicMarkHostMask)
@@ -732,6 +780,17 @@ func (m *Manager) installStaticProxyRules() error {
 			return err
 		}
 
+		// No conntrack for proxy return traffic that is heading to lxc+
+		if err := ip6tables.runProg([]string{
+			"-t", "raw",
+			"-A", ciliumOutputRawChain,
+			"-o", "lxc+",
+			"-m", "mark", "--mark", matchProxyReply,
+			"-m", "comment", "--comment", "cilium: NOTRACK for proxy return traffic",
+			"-j", "CT", "--notrack"}); err != nil {
+			return err
+		}
+
 		// No conntrack for proxy return traffic that is heading to cilium_host
 		if err := ip6tables.runProg([]string{
 			"-t", "raw",
@@ -743,13 +802,37 @@ func (m *Manager) installStaticProxyRules() error {
 			return err
 		}
 
+		// No conntrack for proxy forward traffic that is heading to cilium_host
+		if option.Config.EnableIPSec {
+			if err := ip6tables.runProg([]string{
+				"-t", "raw",
+				"-A", ciliumOutputRawChain,
+				"-o", defaults.HostDevice,
+				"-m", "mark", "--mark", matchProxyForward,
+				"-m", "comment", "--comment", "cilium: NOTRACK for proxy forward traffic",
+				"-j", "CT", "--notrack"}); err != nil {
+				return err
+			}
+		}
+
 		// No conntrack for proxy upstream traffic that is heading to lxc+
 		if err := ip6tables.runProg([]string{
 			"-t", "raw",
 			"-A", ciliumOutputRawChain,
 			"-o", "lxc+",
-			"-m", "mark", "--mark", matchProxyReply,
-			"-m", "comment", "--comment", "cilium: NOTRACK for proxy return traffic",
+			"-m", "mark", "--mark", matchL7ProxyUpstream,
+			"-m", "comment", "--comment", "cilium: NOTRACK for L7 proxy upstream traffic",
+			"-j", "CT", "--notrack"}); err != nil {
+			return err
+		}
+
+		// No conntrack for proxy upstream traffic that is heading to cilium_host
+		if err := ip6tables.runProg([]string{
+			"-t", "raw",
+			"-A", ciliumOutputRawChain,
+			"-o", defaults.HostDevice,
+			"-m", "mark", "--mark", matchL7ProxyUpstream,
+			"-m", "comment", "--comment", "cilium: NOTRACK for L7 proxy upstream traffic",
 			"-j", "CT", "--notrack"}); err != nil {
 			return err
 		}
@@ -1254,8 +1337,9 @@ func (m *Manager) installMasqueradeRules(
 					}
 					for _, device := range devices {
 						filter := tables.DeviceFilter{device}
-						if filter.Match(link.Attrs().Name) {
-							match = true
+						m, reverse := filter.Match(link.Attrs().Name)
+						if m {
+							match = !reverse
 							break
 						}
 					}
@@ -1528,6 +1612,10 @@ func (m *Manager) installRules(state desiredState) error {
 
 			return fmt.Errorf("cannot add custom chain %s: %w", c.name, err)
 		}
+	}
+
+	if err := m.installTunnelNoTrackRules(ip4tables, ip6tables); err != nil {
+		return fmt.Errorf("cannot install tunnel no track rules: %w", err)
 	}
 
 	if err := m.installStaticProxyRules(); err != nil {

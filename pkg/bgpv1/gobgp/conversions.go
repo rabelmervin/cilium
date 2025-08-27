@@ -4,6 +4,7 @@
 package gobgp
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -11,8 +12,10 @@ import (
 	gobgp "github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/pkg/apiutil"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/bgpv1/types"
 	"github.com/cilium/cilium/pkg/time"
 )
@@ -208,10 +211,14 @@ func toGoBGPPolicyStatement(apiStatement *types.RoutePolicyStatement, name strin
 
 	// defined set to match neighbor
 	if len(apiStatement.Conditions.MatchNeighbors) > 0 {
+		neighbors := []string{}
+		for _, addr := range apiStatement.Conditions.MatchNeighbors {
+			neighbors = append(neighbors, netip.PrefixFrom(addr, addr.BitLen()).String())
+		}
 		ds := &gobgp.DefinedSet{
 			DefinedType: gobgp.DefinedType_NEIGHBOR,
 			Name:        policyNeighborDefinedSetName(name),
-			List:        apiStatement.Conditions.MatchNeighbors,
+			List:        neighbors,
 		}
 		s.Conditions.NeighborSet = &gobgp.MatchSet{
 			Type: gobgp.MatchSet_ANY, // any of the configured neighbors
@@ -286,7 +293,15 @@ func toAgentPolicyStatement(s *gobgp.Statement, definedSets map[string]*gobgp.De
 
 	if s.Conditions != nil {
 		if s.Conditions.NeighborSet != nil && definedSets[s.Conditions.NeighborSet.Name] != nil {
-			stmt.Conditions.MatchNeighbors = definedSets[s.Conditions.NeighborSet.Name].List
+			neighbors := []netip.Addr{}
+			for _, addr := range definedSets[s.Conditions.NeighborSet.Name].List {
+				neighbor, err := netip.ParsePrefix(addr)
+				if err != nil {
+					continue
+				}
+				neighbors = append(neighbors, neighbor.Addr())
+			}
+			stmt.Conditions.MatchNeighbors = neighbors
 		}
 		if s.Conditions.PrefixSet != nil && definedSets[s.Conditions.PrefixSet.Name] != nil {
 			for _, pfx := range definedSets[s.Conditions.PrefixSet.Name].Prefixes {
@@ -405,6 +420,29 @@ func toAgentSessionState(s gobgp.PeerState_SessionState) types.SessionState {
 	default:
 		return types.SessionUnknown
 	}
+}
+
+func toAgentCap(s []*anypb.Any) []*models.BgpCapabilities {
+	caps, err := apiutil.UnmarshalCapabilities(s)
+	if err != nil {
+		return nil
+	}
+	agentCaps := make([]*models.BgpCapabilities, 0, len(caps))
+
+	for _, cap := range caps {
+		// similar to NLRI, we need to serialize the capability to get the binary data
+		// because OpenAPI 2.0 spec doesn't support Union type and we don't have any way
+		// to express the API response field which can be a multiple types
+		bin, err := cap.Serialize()
+		if err != nil {
+			return nil
+		}
+		agentCaps = append(agentCaps, &models.BgpCapabilities{
+			Capabilities: base64.StdEncoding.EncodeToString(bin),
+		})
+	}
+
+	return agentCaps
 }
 
 func toAgentFamily(family *gobgp.Family) types.Family {

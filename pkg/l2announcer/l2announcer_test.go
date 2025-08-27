@@ -17,7 +17,6 @@ import (
 	"github.com/cilium/statedb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
@@ -34,6 +33,7 @@ import (
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_meta_v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 type fixture struct {
@@ -57,7 +57,6 @@ func newFixture(t testing.TB) *fixture {
 	hive.New(
 		cell.Provide(tables.NewL2AnnounceTable),
 		cell.Invoke(func(d *statedb.DB, t statedb.RWTable[*tables.L2AnnounceEntry], h_ cell.Health, j job.Registry, jg_ job.Group) {
-			d.RegisterTable(t)
 			db = d
 			tbl = t
 			jr = j
@@ -1111,7 +1110,7 @@ func TestDelService(t *testing.T) {
 
 // This tests affirms that the L2 announcer behaves as expected during it lifecycle, shutting down cleanly
 func TestL2AnnouncerLifecycle(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer testutils.GoleakVerifyNone(t, testutils.GoleakIgnoreCurrent())
 
 	startCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -1119,9 +1118,7 @@ func TestL2AnnouncerLifecycle(t *testing.T) {
 	h := hive.New(
 		Cell,
 		cell.Provide(tables.NewL2AnnounceTable),
-		cell.Invoke(statedb.RegisterTable[*tables.L2AnnounceEntry]),
 		cell.Provide(tables.NewDeviceTable, statedb.RWTable[*tables.Device].ToTable),
-		cell.Invoke(statedb.RegisterTable[*tables.Device]),
 		cell.Provide(func() *option.DaemonConfig {
 			return &option.DaemonConfig{
 				EnableL2Announcements: true,

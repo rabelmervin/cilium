@@ -18,6 +18,8 @@ import (
 	"github.com/cilium/cilium/pkg/metrics/metric"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy/api"
+	"github.com/cilium/cilium/pkg/version"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 // Metrics represents a collection of metrics related to a specific feature.
@@ -27,10 +29,12 @@ type Metrics struct {
 	CPIdentityAllocation          metric.Vec[metric.Gauge]
 	CPCiliumEndpointSlicesEnabled metric.Gauge
 
-	DPMode         metric.Vec[metric.Gauge]
-	DPChaining     metric.Vec[metric.Gauge]
-	DPIP           metric.Vec[metric.Gauge]
-	DPDeviceConfig metric.Vec[metric.Gauge]
+	DPMode           metric.Vec[metric.Gauge]
+	DPChaining       metric.Vec[metric.Gauge]
+	DPIP             metric.Vec[metric.Gauge]
+	DPDeviceConfig   metric.Vec[metric.Gauge]
+	DPEndpointRoutes metric.Gauge
+	DPKernelVersion  metric.Vec[metric.Gauge]
 
 	NPHostFirewallEnabled        metric.Gauge
 	NPLocalRedirectPolicyEnabled metric.Gauge
@@ -38,21 +42,20 @@ type Metrics struct {
 	NPNonDefaultDenyEnabled      metric.Gauge
 	NPCIDRPoliciesToNodes        metric.Vec[metric.Gauge]
 
-	ACLBTransparentEncryption        metric.Vec[metric.Gauge]
-	ACLBKubeProxyReplacementEnabled  metric.Gauge
-	ACLBNodePortConfig               metric.Vec[metric.Gauge]
-	ACLBBGPEnabled                   metric.Gauge
-	ACLBEgressGatewayEnabled         metric.Gauge
-	ACLBBandwidthManagerEnabled      metric.Gauge
-	ACLBSCTPEnabled                  metric.Gauge
-	ACLBInternalTrafficPolicyEnabled metric.Gauge
-	ACLBVTEPEnabled                  metric.Gauge
-	ACLBCiliumEnvoyConfigEnabled     metric.Gauge
-	ACLBBigTCPEnabled                metric.Vec[metric.Gauge]
-	ACLBL2LBEnabled                  metric.Gauge
-	ACLBL2PodAnnouncementEnabled     metric.Gauge
-	ACLBExternalEnvoyProxyEnabled    metric.Vec[metric.Gauge]
-	ACLBCiliumNodeConfigEnabled      metric.Gauge
+	ACLBTransparentEncryption       metric.Vec[metric.Gauge]
+	ACLBKubeProxyReplacementEnabled metric.Gauge
+	ACLBNodePortConfig              metric.Vec[metric.Gauge]
+	ACLBBGPEnabled                  metric.Gauge
+	ACLBEgressGatewayEnabled        metric.Gauge
+	ACLBBandwidthManagerEnabled     metric.Gauge
+	ACLBSCTPEnabled                 metric.Gauge
+	ACLBVTEPEnabled                 metric.Gauge
+	ACLBCiliumEnvoyConfigEnabled    metric.Gauge
+	ACLBBigTCPEnabled               metric.Vec[metric.Gauge]
+	ACLBL2LBEnabled                 metric.Gauge
+	ACLBL2PodAnnouncementEnabled    metric.Gauge
+	ACLBExternalEnvoyProxyEnabled   metric.Vec[metric.Gauge]
+	ACLBCiliumNodeConfigEnabled     metric.Gauge
 
 	NPL3Ingested                metric.Vec[metric.Counter]
 	NPHostNPIngested            metric.Vec[metric.Counter]
@@ -121,6 +124,8 @@ const (
 	advConnClusterMeshModeETCD            = clustermesh.ClusterMeshModeETCD
 	advConnClusterMeshModeKVStoreMesh     = clustermesh.ClusterMeshModeKVStoreMesh
 	advConnClusterMeshModeAPIServerOrETCD = clustermesh.ClusterMeshModeClusterMeshAPIServerOrETCD
+
+	kernelVersionUnknown = "unknown"
 )
 
 var (
@@ -345,6 +350,24 @@ func NewMetrics(withDefaults bool) Metrics {
 			},
 		}),
 
+		DPEndpointRoutes: metric.NewGauge(metric.GaugeOpts{
+			Help:      "Endpoint Routes enabled in the datapath",
+			Namespace: metrics.Namespace,
+			Subsystem: subsystemDP,
+			Name:      "endpoint_routes_enabled",
+		}),
+
+		DPKernelVersion: metric.NewGaugeVecWithLabels(metric.GaugeOpts{
+			Help:      "Kernel version used by the datapath",
+			Namespace: metrics.Namespace,
+			Subsystem: subsystemDP,
+			Name:      "kernel_version",
+		}, metric.Labels{
+			{
+				Name: "version",
+			},
+		}),
+
 		NPHostFirewallEnabled: metric.NewGauge(metric.GaugeOpts{
 			Help:      "Host firewall enabled on the agent",
 			Namespace: metrics.Namespace,
@@ -409,6 +432,17 @@ func NewMetrics(withDefaults bool) Metrics {
 			},
 			{
 				Name: "node2node_enabled", Values: func() metric.Values {
+					if !withDefaults {
+						return nil
+					}
+					return metric.NewValues(
+						"true",
+						"false",
+					)
+				}(),
+			},
+			{
+				Name: "strict_mode_enabled", Values: func() metric.Values {
 					if !withDefaults {
 						return nil
 					}
@@ -491,13 +525,6 @@ func NewMetrics(withDefaults bool) Metrics {
 			Namespace: metrics.Namespace,
 			Subsystem: subsystemACLB,
 			Name:      "sctp_enabled",
-		}),
-
-		ACLBInternalTrafficPolicyEnabled: metric.NewGauge(metric.GaugeOpts{
-			Help:      "K8s Internal Traffic Policy enabled on the agent",
-			Namespace: metrics.Namespace,
-			Subsystem: subsystemACLB,
-			Name:      "k8s_internal_traffic_policy_enabled",
 		}),
 
 		ACLBVTEPEnabled: metric.NewGauge(metric.GaugeOpts{
@@ -944,10 +971,10 @@ func NewMetrics(withDefaults bool) Metrics {
 }
 
 type featureMetrics interface {
-	update(params enabledFeatures, config *option.DaemonConfig, lbConfig loadbalancer.Config, kprCfg kpr.KPRConfig)
+	update(params enabledFeatures, config *option.DaemonConfig, lbConfig loadbalancer.Config, kprCfg kpr.KPRConfig, wgCfg wgTypes.WireguardConfig)
 }
 
-func (m Metrics) update(params enabledFeatures, config *option.DaemonConfig, lbConfig loadbalancer.Config, kprCfg kpr.KPRConfig) {
+func (m Metrics) update(params enabledFeatures, config *option.DaemonConfig, lbConfig loadbalancer.Config, kprCfg kpr.KPRConfig, wgCfg wgTypes.WireguardConfig) {
 	networkMode := networkModeDirectRouting
 	if config.TunnelingEnabled() {
 		switch params.TunnelProtocol() {
@@ -957,13 +984,13 @@ func (m Metrics) update(params enabledFeatures, config *option.DaemonConfig, lbC
 			networkMode = networkModeOverlayGENEVE
 		}
 	}
-	m.DPMode.WithLabelValues(networkMode).Add(1)
+	m.DPMode.WithLabelValues(networkMode).Set(1)
 
 	ipamMode := config.IPAMMode()
-	m.CPIPAM.WithLabelValues(ipamMode).Add(1)
+	m.CPIPAM.WithLabelValues(ipamMode).Set(1)
 
 	chainingMode := params.GetChainingMode()
-	m.DPChaining.WithLabelValues(chainingMode).Add(1)
+	m.DPChaining.WithLabelValues(chainingMode).Set(1)
 
 	var ip string
 	switch {
@@ -974,85 +1001,95 @@ func (m Metrics) update(params enabledFeatures, config *option.DaemonConfig, lbC
 	case config.IPv6Enabled():
 		ip = networkIPv6
 	}
-	m.DPIP.WithLabelValues(ip).Add(1)
+	m.DPIP.WithLabelValues(ip).Set(1)
 
 	identityAllocationMode := config.IdentityAllocationMode
-	m.CPIdentityAllocation.WithLabelValues(identityAllocationMode).Add(1)
+	m.CPIdentityAllocation.WithLabelValues(identityAllocationMode).Set(1)
 
 	if config.EnableCiliumEndpointSlice {
-		m.CPCiliumEndpointSlicesEnabled.Add(1)
+		m.CPCiliumEndpointSlicesEnabled.Set(1)
 	}
 
 	deviceMode := config.DatapathMode
-	m.DPDeviceConfig.WithLabelValues(deviceMode).Add(1)
+	m.DPDeviceConfig.WithLabelValues(deviceMode).Set(1)
+
+	if config.EnableEndpointRoutes {
+		m.DPEndpointRoutes.Set(1)
+	}
+
+	// Get kernel version - this would need to be implemented to detect actual kernel version
+	kernelVersion, err := version.GetKernelVersion()
+	if err != nil || kernelVersion.String() == "" {
+		m.DPKernelVersion.WithLabelValues(kernelVersionUnknown).Set(1)
+	} else if kernelVersion.String() != "" {
+		m.DPKernelVersion.WithLabelValues(kernelVersion.String()).Set(1)
+	}
 
 	if config.EnableHostFirewall {
-		m.NPHostFirewallEnabled.Add(1)
+		m.NPHostFirewallEnabled.Set(1)
 	}
 
 	if config.EnableLocalRedirectPolicy {
-		m.NPLocalRedirectPolicyEnabled.Add(1)
+		m.NPLocalRedirectPolicyEnabled.Set(1)
 	}
 
 	if params.IsMutualAuthEnabled() {
-		m.NPMutualAuthEnabled.Add(1)
+		m.NPMutualAuthEnabled.Set(1)
 	}
 
 	if config.EnableNonDefaultDenyPolicies {
-		m.NPNonDefaultDenyEnabled.Add(1)
+		m.NPNonDefaultDenyEnabled.Set(1)
 	}
 
 	for _, mode := range config.PolicyCIDRMatchMode {
-		m.NPCIDRPoliciesToNodes.WithLabelValues(mode).Add(1)
+		m.NPCIDRPoliciesToNodes.WithLabelValues(mode).Set(1)
+	}
+
+	strictMode := "false"
+	if config.EnableEncryptionStrictMode {
+		strictMode = "true"
+	}
+
+	node2nodeEnabled := "false"
+	if config.EncryptNode {
+		node2nodeEnabled = "true"
 	}
 
 	if config.EnableIPSec {
-		if config.EncryptNode {
-			m.ACLBTransparentEncryption.WithLabelValues(advConnNetEncIPSec, "true").Add(1)
-		} else {
-			m.ACLBTransparentEncryption.WithLabelValues(advConnNetEncIPSec, "false").Add(1)
-		}
+		m.ACLBTransparentEncryption.WithLabelValues(advConnNetEncIPSec, node2nodeEnabled, strictMode).Set(1)
 	}
-	if config.EnableWireguard {
-		if config.EncryptNode {
-			m.ACLBTransparentEncryption.WithLabelValues(advConnNetEncWireGuard, "true").Add(1)
-		} else {
-			m.ACLBTransparentEncryption.WithLabelValues(advConnNetEncWireGuard, "false").Add(1)
-		}
+	if wgCfg.Enabled() {
+		m.ACLBTransparentEncryption.WithLabelValues(advConnNetEncWireGuard, node2nodeEnabled, strictMode).Set(1)
 	}
 
-	if kprCfg.KubeProxyReplacement == option.KubeProxyReplacementTrue {
-		m.ACLBKubeProxyReplacementEnabled.Add(1)
+	if kprCfg.KubeProxyReplacement {
+		m.ACLBKubeProxyReplacementEnabled.Set(1)
 	}
 
-	m.ACLBNodePortConfig.WithLabelValues(lbConfig.LBMode, lbConfig.LBAlgorithm, config.NodePortAcceleration).Add(1)
+	m.ACLBNodePortConfig.WithLabelValues(lbConfig.LBMode, lbConfig.LBAlgorithm, config.NodePortAcceleration).Set(1)
 
 	if config.EnableBGPControlPlane {
-		m.ACLBBGPEnabled.Add(1)
+		m.ACLBBGPEnabled.Set(1)
 	}
 
 	if config.EnableEgressGateway {
-		m.ACLBEgressGatewayEnabled.Add(1)
+		m.ACLBEgressGatewayEnabled.Set(1)
 	}
 
 	if params.IsBandwidthManagerEnabled() {
-		m.ACLBBandwidthManagerEnabled.Add(1)
+		m.ACLBBandwidthManagerEnabled.Set(1)
 	}
 
 	if config.EnableSCTP {
-		m.ACLBSCTPEnabled.Add(1)
-	}
-
-	if config.EnableInternalTrafficPolicy {
-		m.ACLBInternalTrafficPolicyEnabled.Add(1)
+		m.ACLBSCTPEnabled.Set(1)
 	}
 
 	if config.EnableVTEP {
-		m.ACLBVTEPEnabled.Add(1)
+		m.ACLBVTEPEnabled.Set(1)
 	}
 
 	if config.EnableEnvoyConfig {
-		m.ACLBCiliumEnvoyConfigEnabled.Add(1)
+		m.ACLBCiliumEnvoyConfigEnabled.Set(1)
 	}
 
 	var bigTCPProto string
@@ -1066,24 +1103,24 @@ func (m Metrics) update(params enabledFeatures, config *option.DaemonConfig, lbC
 	}
 
 	if bigTCPProto != "" {
-		m.ACLBBigTCPEnabled.WithLabelValues(bigTCPProto).Add(1)
+		m.ACLBBigTCPEnabled.WithLabelValues(bigTCPProto).Set(1)
 	}
 
 	if config.EnableL2Announcements {
-		m.ACLBL2LBEnabled.Add(1)
+		m.ACLBL2LBEnabled.Set(1)
 	}
 
 	if params.IsL2PodAnnouncementEnabled() {
-		m.ACLBL2PodAnnouncementEnabled.Add(1)
+		m.ACLBL2PodAnnouncementEnabled.Set(1)
 	}
 
 	if config.ExternalEnvoyProxy {
-		m.ACLBExternalEnvoyProxyEnabled.WithLabelValues(advConnExtEnvoyProxyStandalone).Add(1)
+		m.ACLBExternalEnvoyProxyEnabled.WithLabelValues(advConnExtEnvoyProxyStandalone).Set(1)
 	} else {
-		m.ACLBExternalEnvoyProxyEnabled.WithLabelValues(advConnExtEnvoyProxyEmbedded).Add(1)
+		m.ACLBExternalEnvoyProxyEnabled.WithLabelValues(advConnExtEnvoyProxyEmbedded).Set(1)
 	}
 
 	if params.IsDynamicConfigSourceKindNodeConfig() {
-		m.ACLBCiliumNodeConfigEnabled.Add(1)
+		m.ACLBCiliumNodeConfigEnabled.Set(1)
 	}
 }

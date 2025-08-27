@@ -159,10 +159,14 @@ func runPodReflector(ctx context.Context, health cell.Health, p reflectorParams,
 	processBuffer := func(txn writer.WriteTxn, buf iter.Seq2[types.NamespacedName, statedb.Change[daemonK8s.LocalPod]]) {
 		for _, change := range buf {
 			obj := change.Object.Pod
+			if obj.Spec.HostNetwork {
+				continue
+			}
+
 			podName := obj.Namespace + "/" + obj.Name
 			if change.Deleted {
 				rh.update(podName, nil)
-				if p.ExtConfig.EnableHostPort {
+				if p.ExtConfig.KubeProxyReplacement {
 					if err := deleteHostPort(p, txn, obj); err != nil {
 						p.Log.Error("BUG: Unexpected failure in deleteHostPort",
 							logfields.Error, err)
@@ -174,7 +178,7 @@ func runPodReflector(ctx context.Context, health cell.Health, p reflectorParams,
 					// Pod has been terminated. Clean up the HostPort already even before the Pod object
 					// has been removed to free up the HostPort for other pods.
 					rh.update(podName, nil)
-					if p.ExtConfig.EnableHostPort {
+					if p.ExtConfig.KubeProxyReplacement {
 						if err := deleteHostPort(p, txn, obj); err != nil {
 							p.Log.Error("BUG: Unexpected failure in deleteHostPort",
 								logfields.Error, err)
@@ -189,7 +193,7 @@ func runPodReflector(ctx context.Context, health cell.Health, p reflectorParams,
 						continue
 					}
 
-					if p.ExtConfig.EnableHostPort {
+					if p.ExtConfig.KubeProxyReplacement {
 						err = upsertHostPort(p.HaveNetNSCookieSupport, p.Config, p.ExtConfig, p.Log, txn, p.Writer, obj)
 					}
 					rh.update(podName, err)
@@ -308,10 +312,12 @@ func runServiceEndpointsReflector(ctx context.Context, health cell.Health, p ref
 							}
 							if !foundPort {
 								if !yield(
-									loadbalancer.L3n4Addr{
-										AddrCluster: addr,
-										L4Addr:      l4Addr,
-									}) {
+									loadbalancer.NewL3n4Addr(
+										l4Addr.Protocol,
+										addr,
+										l4Addr.Port,
+										loadbalancer.ScopeExternal,
+									)) {
 									return
 								}
 							}
@@ -599,13 +605,12 @@ func upsertHostPort(netnsCookie lbmaps.HaveNetNSCookieSupport, config loadbalanc
 				ipv6 = ipv6 || addr.Is6()
 
 				bep := loadbalancer.BackendParams{
-					Address: loadbalancer.L3n4Addr{
-						AddrCluster: addr,
-						L4Addr: loadbalancer.L4Addr{
-							Protocol: proto,
-							Port:     uint16(p.ContainerPort),
-						},
-					},
+					Address: loadbalancer.NewL3n4Addr(
+						proto,
+						addr,
+						uint16(p.ContainerPort),
+						loadbalancer.ScopeExternal,
+					),
 					Weight: loadbalancer.DefaultBackendWeight,
 				}
 				bes = append(bes, bep)
@@ -655,14 +660,12 @@ func upsertHostPort(netnsCookie lbmaps.HaveNetNSCookieSupport, config loadbalanc
 				fe := loadbalancer.FrontendParams{
 					Type:        loadbalancer.SVCTypeHostPort,
 					ServiceName: serviceName,
-					Address: loadbalancer.L3n4Addr{
-						AddrCluster: addr,
-						L4Addr: loadbalancer.L4Addr{
-							Protocol: proto,
-							Port:     uint16(p.HostPort),
-						},
-						Scope: loadbalancer.ScopeExternal,
-					},
+					Address: loadbalancer.NewL3n4Addr(
+						proto,
+						addr,
+						uint16(p.HostPort),
+						loadbalancer.ScopeExternal,
+					),
 					ServicePort: uint16(p.HostPort),
 				}
 				fes = append(fes, fe)

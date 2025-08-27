@@ -16,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/duration"
 
 	"github.com/cilium/cilium/api/v1/models"
-
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/time"
 )
@@ -56,6 +55,9 @@ type Frontend struct {
 
 	// Backends associated with the frontend.
 	Backends BackendsSeq2
+
+	// HealthCheckBackends associated with the frontend that includes the ones that should be health checked.
+	HealthCheckBackends BackendsSeq2
 
 	// ID is the identifier allocated to this frontend. Used as the key
 	// in the services BPF map. This field is populated by the reconciler
@@ -118,9 +120,9 @@ func (fe *Frontend) TableRow() []string {
 		string(fe.PortName),
 		showBackends(fe.Backends),
 		redirectTo,
-		string(fe.Status.Kind),
+		fe.Status.Kind.String(),
 		duration.HumanDuration(time.Since(fe.Status.UpdatedAt)),
-		fe.Status.Error,
+		fe.Status.GetError(),
 	}
 }
 
@@ -157,14 +159,18 @@ func (fe *Frontend) ToModel() *models.Service {
 	}
 
 	backendModel := func(be BackendParams) *models.BackendAddress {
-		addrClusterStr := be.Address.AddrCluster.String()
-		stateStr, _ := be.State.String()
+		addrClusterStr := be.Address.AddrCluster().String()
+		state := be.State
+		if be.Unhealthy {
+			state = BackendStateQuarantined
+		}
+		stateStr, _ := state.String()
 		return &models.BackendAddress{
 			IP:        &addrClusterStr,
-			Protocol:  be.Address.Protocol,
-			Port:      be.Address.Port,
+			Protocol:  be.Address.Protocol(),
+			Port:      be.Address.Port(),
 			NodeName:  be.NodeName,
-			Zone:      be.Zone,
+			Zone:      be.GetZone(),
 			State:     stateStr,
 			Preferred: true,
 			Weight:    &be.Weight,
@@ -238,13 +244,10 @@ const (
 )
 
 func NewFrontendsTable(cfg Config, db *statedb.DB) (statedb.RWTable[*Frontend], error) {
-	tbl, err := statedb.NewTable(
+	return statedb.NewTable(
+		db,
 		FrontendTableName,
 		frontendAddressIndex,
 		frontendServiceIndex,
 	)
-	if err != nil {
-		return nil, err
-	}
-	return tbl, db.RegisterTable(tbl)
 }

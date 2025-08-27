@@ -34,10 +34,9 @@ nodeport_has_nat_conflict_ipv6(const struct ipv6hdr *ip6 __maybe_unused,
 
 #if defined(IS_BPF_HOST)
 	const union v6addr dr_addr = IPV6_DIRECT_ROUTING;
-	__u32 dr_ifindex = DIRECT_ROUTING_DEV_IFINDEX;
 
 	/* See comment in nodeport_has_nat_conflict_ipv4(). */
-	if (dr_ifindex == THIS_INTERFACE_IFINDEX &&
+	if (CONFIG(direct_routing_dev_ifindex) == CONFIG(interface_ifindex) &&
 	    ipv6_addr_equals((union v6addr *)&ip6->saddr, &dr_addr)) {
 		ipv6_addr_copy(&target->addr, &dr_addr);
 		target->needs_ct = true;
@@ -299,13 +298,11 @@ nodeport_has_nat_conflict_ipv4(const struct iphdr *ip4 __maybe_unused,
 #endif /* TUNNEL_MODE && IS_BPF_OVERLAY */
 
 #if defined(IS_BPF_HOST)
-	__u32 dr_ifindex = DIRECT_ROUTING_DEV_IFINDEX;
-
-	/* THIS_INTERFACE_IFINDEX == DIRECT_ROUTING_DEV_IFINDEX cannot be moved into
-	 * preprocessor, as the former is known only during load time (templating).
+	/* direct_routing_dev_ifindex == interface_ifindex cannot be moved into
+	 * preprocessor, as the values are known only during load time (templating).
 	 * This checks whether bpf_host is running on the direct routing device.
 	 */
-	if (dr_ifindex == THIS_INTERFACE_IFINDEX &&
+	if (CONFIG(direct_routing_dev_ifindex) == CONFIG(interface_ifindex) &&
 	    ip4->saddr == IPV4_DIRECT_ROUTING) {
 		target->addr = IPV4_DIRECT_ROUTING;
 		target->needs_ct = true;
@@ -607,50 +604,6 @@ int tail_handle_nat_fwd_ipv4(struct __ctx_buff *ctx)
 
 #ifdef ENABLE_HEALTH_CHECK
 static __always_inline int
-health_encap_v4(struct __ctx_buff *ctx, __u32 tunnel_ep,
-		__u32 seclabel)
-{
-	__u32 key_size = TUNNEL_KEY_WITHOUT_SRC_IP;
-	struct bpf_tunnel_key key;
-
-	/* When encapsulating, a packet originating from the local
-	 * host is being considered as a packet from a remote node
-	 * as it is being received.
-	 */
-	memset(&key, 0, sizeof(key));
-	key.tunnel_id = get_tunnel_id(seclabel == HOST_ID ? LOCAL_NODE_ID : seclabel);
-	key.remote_ipv4 = bpf_htonl(tunnel_ep);
-	key.tunnel_ttl = IPDEFTTL;
-
-	if (unlikely(ctx_set_tunnel_key(ctx, &key, key_size,
-					BPF_F_ZERO_CSUM_TX) < 0))
-		return DROP_WRITE_ERROR;
-	return 0;
-}
-
-static __always_inline int
-health_encap_v6(struct __ctx_buff *ctx, const union v6addr *tunnel_ep,
-		__u32 seclabel)
-{
-	__u32 key_size = TUNNEL_KEY_WITHOUT_SRC_IP;
-	struct bpf_tunnel_key key;
-
-	memset(&key, 0, sizeof(key));
-	key.tunnel_id = get_tunnel_id(seclabel == HOST_ID ? LOCAL_NODE_ID : seclabel);
-	key.remote_ipv6[0] = tunnel_ep->p1;
-	key.remote_ipv6[1] = tunnel_ep->p2;
-	key.remote_ipv6[2] = tunnel_ep->p3;
-	key.remote_ipv6[3] = tunnel_ep->p4;
-	key.tunnel_ttl = IPDEFTTL;
-
-	if (unlikely(ctx_set_tunnel_key(ctx, &key, key_size,
-					BPF_F_ZERO_CSUM_TX |
-					BPF_F_TUNINFO_IPV6) < 0))
-		return DROP_WRITE_ERROR;
-	return 0;
-}
-
-static __always_inline int
 lb_handle_health(struct __ctx_buff *ctx __maybe_unused, __be16 proto)
 {
 	void *data __maybe_unused, *data_end __maybe_unused;
@@ -679,7 +632,7 @@ lb_handle_health(struct __ctx_buff *ctx __maybe_unused, __be16 proto)
 				return DROP_WRITE_ERROR;
 			flags = BPF_F_INGRESS;
 		} else {
-			ret = health_encap_v4(ctx, val->peer.address, 0);
+			ret = dsr_set_ipip4_dev(ctx, val->peer.address, 0);
 			if (ret != 0)
 				return ret;
 			ctx->mark |= MARK_MAGIC_HEALTH_IPIP_DONE;
@@ -705,7 +658,7 @@ lb_handle_health(struct __ctx_buff *ctx __maybe_unused, __be16 proto)
 				return DROP_WRITE_ERROR;
 			flags = BPF_F_INGRESS;
 		} else {
-			ret = health_encap_v6(ctx, &val->peer.address, 0);
+			ret = dsr_set_ipip6_dev(ctx, &val->peer.address, 0);
 			if (ret != 0)
 				return ret;
 			ctx->mark |= MARK_MAGIC_HEALTH_IPIP_DONE;

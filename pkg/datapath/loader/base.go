@@ -184,7 +184,7 @@ func (l *loader) reinitializeIPSec(lnc *datapath.LocalNodeConfiguration) error {
 	// the code below, specific to EncryptInterface. Specifically, we will load
 	// bpf_host code in reloadHostDatapath onto the physical devices as selected
 	// by configuration.
-	if !option.Config.EnableIPSec || option.Config.AreDevicesRequired(lnc.KPRConfig) {
+	if !option.Config.EnableIPSec || option.Config.AreDevicesRequired(lnc.KPRConfig, lnc.EnableWireguard) {
 		return nil
 	}
 
@@ -289,7 +289,7 @@ func reinitializeOverlay(ctx context.Context, logger *slog.Logger, lnc *datapath
 }
 
 func reinitializeWireguard(ctx context.Context, logger *slog.Logger, lnc *datapath.LocalNodeConfiguration) (err error) {
-	if !option.Config.EnableWireguard {
+	if !lnc.EnableWireguard {
 		cleanCallsMaps("cilium_calls_wireguard*")
 		return
 	}
@@ -400,7 +400,7 @@ func (l *loader) Reinitialize(ctx context.Context, lnc *datapath.LocalNodeConfig
 		return fmt.Errorf("failed to setup base devices: %w", err)
 	}
 
-	if option.Config.EnableHealthDatapath || option.Config.EnableIPIPTermination {
+	if option.Config.EnableIPIPDevices {
 		// This setting needs to be applied before creating the IPIP devices.
 		sysIPIP := []tables.Sysctl{
 			{Name: []string{"net", "core", "fb_tunnels_only_for_init_net"}, Val: "2", IgnoreErr: true},

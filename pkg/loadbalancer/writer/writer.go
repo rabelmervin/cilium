@@ -43,12 +43,15 @@ type Writer struct {
 
 	sourcePriorities map[source.Source]uint8 // The smaller the int, the more preferred the source. Use via sourcePriority().
 
-	selectBackendsFunc SelectBackendsFunc
+	selectBackendsFunc         SelectBackendsFunc
+	isServiceHealthCheckedFunc IsServiceHealthCheckedFunc
 
 	extCfg *loadbalancer.ExternalConfig
 }
 
 type SelectBackendsFunc = func(iter.Seq2[loadbalancer.BackendParams, statedb.Revision], *loadbalancer.Service, *loadbalancer.Frontend) iter.Seq2[loadbalancer.BackendParams, statedb.Revision]
+
+type IsServiceHealthCheckedFunc = func(*loadbalancer.Service) bool
 
 // Backends for the local cluster are associated with ID 0, regardless of the real cluster id.
 const LocalClusterID = 0
@@ -94,9 +97,38 @@ func (w *Writer) SetSelectBackendsFunc(fn SelectBackendsFunc) {
 	w.selectBackendsFunc = fn
 }
 
+func (w *Writer) SetIsServiceHealthCheckedFunc(fn IsServiceHealthCheckedFunc) {
+	w.isServiceHealthCheckedFunc = fn
+}
+
 // SelectBackends filters backends associated with [svc]. If [optionalFrontend] is non-nil, then backends are further filtered
 // by frontend IP family, protocol and port name.
 func (w *Writer) SelectBackends(bes iter.Seq2[loadbalancer.BackendParams, statedb.Revision], svc *loadbalancer.Service, optionalFrontend *loadbalancer.Frontend) iter.Seq2[loadbalancer.BackendParams, statedb.Revision] {
+	selectedBackends := w.selectBackendsFunc(bes, svc, optionalFrontend)
+
+	// return all selected backends for services that should not be health checked
+	if w.isServiceHealthCheckedFunc == nil || !w.isServiceHealthCheckedFunc(svc) {
+		return selectedBackends
+	}
+
+	return func(yield func(loadbalancer.BackendParams, statedb.Revision) bool) {
+		for be, rev := range selectedBackends {
+
+			// filter backends that haven't been health checked yet
+			if be.State == loadbalancer.BackendStateActive && be.UnhealthyUpdatedAt == nil {
+				continue
+			}
+
+			if !yield(be, rev) {
+				return
+			}
+		}
+	}
+}
+
+// SelectBackendsForHealthChecking filters backends associated with [svc]. If [optionalFrontend] is non-nil, then backends are further filtered
+// by frontend IP family, protocol and port name.
+func (w *Writer) SelectBackendsForHealthChecking(bes iter.Seq2[loadbalancer.BackendParams, statedb.Revision], svc *loadbalancer.Service, optionalFrontend *loadbalancer.Frontend) iter.Seq2[loadbalancer.BackendParams, statedb.Revision] {
 	return w.selectBackendsFunc(bes, svc, optionalFrontend)
 }
 
@@ -245,13 +277,14 @@ func (w *Writer) UpdateBackendHealth(txn WriteTxn, serviceName loadbalancer.Serv
 	if inst == nil {
 		return false, loadbalancer.ErrServiceNotFound
 	}
-	if inst.Unhealthy == !healthy && !inst.UnhealthyUpdatedAt.IsZero() {
+	if inst.Unhealthy == !healthy && inst.UnhealthyUpdatedAt != nil {
 		return false, nil
 	}
 
 	be = be.Clone()
 	inst.Unhealthy = !healthy
-	inst.UnhealthyUpdatedAt = time.Now()
+	now := time.Now()
+	inst.UnhealthyUpdatedAt = &now
 	be.Instances = be.Instances.Set(loadbalancer.BackendInstanceKey{ServiceName: serviceName, SourcePriority: w.sourcePriority(inst.Source)}, *inst)
 	w.bes.Insert(txn, be)
 	return true, w.RefreshFrontends(txn, serviceName)
@@ -259,7 +292,7 @@ func (w *Writer) UpdateBackendHealth(txn WriteTxn, serviceName loadbalancer.Serv
 
 func (w *Writer) upsertFrontendParams(txn WriteTxn, params loadbalancer.FrontendParams, svc *loadbalancer.Service) (old *loadbalancer.Frontend, err error) {
 	if params.ServicePort == 0 {
-		params.ServicePort = params.Address.Port
+		params.ServicePort = params.Address.Port()
 	}
 	fe := &loadbalancer.Frontend{
 		FrontendParams: params,
@@ -349,6 +382,7 @@ func (w *Writer) refreshFrontend(txn statedb.ReadTxn, fe *loadbalancer.Frontend)
 	}
 	bes, _ := w.BackendsForService(txn, svc.Name)
 	fe.Backends = loadbalancer.BackendsSeq2(w.SelectBackends(bes, svc, fe))
+	fe.HealthCheckBackends = loadbalancer.BackendsSeq2(w.SelectBackendsForHealthChecking(bes, svc, fe))
 }
 
 func (w *Writer) RefreshFrontends(txn WriteTxn, name loadbalancer.ServiceName) error {
@@ -382,15 +416,40 @@ func (w *Writer) DefaultSelectBackends(bes iter.Seq2[loadbalancer.BackendParams,
 			node, err := w.lns.Get(context.Background())
 			if err == nil {
 				isLocalProxyDelegation = func(addr loadbalancer.L3n4Addr) bool {
-					return node.IsNodeIP(addr.AddrCluster.Addr()) != ""
+					return node.IsNodeIP(addr.Addr()) != ""
 				}
 			}
 		}
 	}
 
+	// Check whether the [BackendParams.ForZones] hints should be consulted when
+	// selecting a backend.
+	checkZoneHints := false
+	thisZone := w.nodeZone.Load()
+	if w.config.EnableServiceTopology &&
+		thisZone != nil &&
+		fe != nil && fe.RedirectTo == nil &&
+		fe.Service.TrafficDistribution == loadbalancer.TrafficDistributionPreferClose {
+		// Topology-aware routing enabled. See if we can find any backends fitting
+		// for our zone. If we don't find any we fall back to default behaviour.
+		// https://kubernetes.io/docs/concepts/services-networking/topology-aware-routing/#safeguards
+		candidatesFound, missingHints := false, false
+		for be := range bes {
+			if be.Zone != nil && len(be.Zone.ForZones) > 0 {
+				if !candidatesFound && slices.Contains(be.Zone.ForZones, *thisZone) {
+					candidatesFound = true
+				}
+			} else {
+				missingHints = true
+				break
+			}
+		}
+		checkZoneHints = candidatesFound && !missingHints
+	}
+
 	return func(yield func(loadbalancer.BackendParams, statedb.Revision) bool) {
 		for be, rev := range bes {
-			if fe != nil && fe.Address.Protocol != be.Address.Protocol {
+			if fe != nil && fe.Address.Protocol() != be.Address.Protocol() {
 				continue
 			}
 			if be.Address.IsIPv6() {
@@ -408,18 +467,10 @@ func (w *Writer) DefaultSelectBackends(bes iter.Seq2[loadbalancer.BackendParams,
 					continue
 				}
 			}
+			if checkZoneHints && !slices.Contains(be.Zone.ForZones, *thisZone) {
+				continue
+			}
 			if fe != nil {
-				if w.config.EnableServiceTopology &&
-					fe.RedirectTo == nil &&
-					fe.Service.TrafficDistribution == loadbalancer.TrafficDistributionPreferClose {
-					thisZone := w.nodeZone.Load()
-					if len(be.ForZones) > 0 && thisZone != nil {
-						// Topology-aware routing is enabled. Only use this backend if it is selected for this zone.
-						if !slices.Contains(be.ForZones, *thisZone) {
-							continue
-						}
-					}
-				}
 				if fe.PortName != "" {
 					// A backend with specific port name requested. Look up what this backend
 					// is called for this service.
@@ -725,10 +776,6 @@ func isExtLocal(fe *loadbalancer.Frontend) bool {
 }
 
 func isIntLocal(extCfg *loadbalancer.ExternalConfig, fe *loadbalancer.Frontend) bool {
-	if !extCfg.EnableInternalTrafficPolicy {
-		return false
-	}
-
 	switch fe.Type {
 	case loadbalancer.SVCTypeClusterIP, loadbalancer.SVCTypeNodePort, loadbalancer.SVCTypeLoadBalancer, loadbalancer.SVCTypeExternalIPs:
 		return fe.Service.IntTrafficPolicy == loadbalancer.SVCTrafficPolicyLocal
@@ -740,7 +787,7 @@ func isIntLocal(extCfg *loadbalancer.ExternalConfig, fe *loadbalancer.Frontend) 
 func shouldUseLocalBackends(extCfg *loadbalancer.ExternalConfig, fe *loadbalancer.Frontend) bool {
 	// When both traffic policies are Local, there is only the external scope, which
 	// should contain node-local backends only. Checking isExtLocal is still enough.
-	switch fe.Address.Scope {
+	switch fe.Address.Scope() {
 	case loadbalancer.ScopeExternal:
 		if fe.Type == loadbalancer.SVCTypeClusterIP {
 			// ClusterIP doesn't support externalTrafficPolicy and has only the

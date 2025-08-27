@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -22,7 +23,6 @@ import (
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/ipmasq"
 	"github.com/cilium/cilium/pkg/maps/policymap"
-	"github.com/cilium/cilium/pkg/maps/recorder"
 	"github.com/cilium/cilium/pkg/option"
 )
 
@@ -35,6 +35,14 @@ type endpointManager interface {
 	EndpointExists(endpointID uint16) bool
 	RemoveDatapathMapping(endpointID uint16) error
 	RemoveMapPath(path string)
+	ListMapsDir(path string) []string
+}
+
+// PrefixedMap describes a pattern for filtering map files.
+// It specifies which files to match via Prefix and which to exclude via Excludes.
+type PrefixedMap struct {
+	Prefix   string
+	Excludes []string
 }
 
 // MapSweeper is responsible for checking stale map paths on the filesystem
@@ -119,7 +127,21 @@ func (ms *MapSweeper) CollectStaleMapGarbage() {
 // been disabled. The maps may still be in use in which case they will continue
 // to live until the BPF program using them is being replaced.
 func (ms *MapSweeper) RemoveDisabledMaps() {
-	maps := []string{"cilium_proxy4", "cilium_proxy6"}
+	var (
+		mapsDir = bpf.TCGlobalsPath()
+		maps    = []string{
+			// maps we unconditionally remove, because they no longer exist in modern versions of Cilium at all
+			"cilium_proxy4",
+			"cilium_proxy6",
+			"cilium_capture_cache",
+			"cilium_capture4_rules",
+			"cilium_capture6_rules",
+			"cilium_ktime_cache",
+		}
+		prefixedMaps = []PrefixedMap{
+			{"cilium_policy_", []string{policymap.MapName}},
+		}
+	)
 
 	if !option.Config.EnableIPv6 {
 		maps = append(maps, []string{
@@ -133,7 +155,6 @@ func (ms *MapSweeper) RemoveDisabledMaps() {
 			"cilium_lb6_backends_v2",
 			"cilium_lb6_reverse_sk",
 			"cilium_snat_v6_external",
-			recorder.MapNameWcard6,
 			lbmaps.MaglevOuter6MapName,
 			lbmaps.Affinity6MapName,
 			lbmaps.SourceRange6MapName,
@@ -156,7 +177,6 @@ func (ms *MapSweeper) RemoveDisabledMaps() {
 			"cilium_lb4_backends_v2",
 			"cilium_lb4_reverse_sk",
 			"cilium_snat_v4_external",
-			recorder.MapNameWcard4,
 			lbmaps.MaglevOuter4MapName,
 			lbmaps.Affinity4MapName,
 			lbmaps.SourceRange4MapName,
@@ -169,11 +189,6 @@ func (ms *MapSweeper) RemoveDisabledMaps() {
 
 	if !ms.kprCfg.EnableNodePort {
 		maps = append(maps, []string{"cilium_snat_v4_external", "cilium_snat_v6_external"}...)
-	}
-
-	if !option.Config.EnableRecorder {
-		maps = append(maps, []string{recorder.MapNameWcard4, recorder.MapNameWcard6,
-			"cilium_capture_cache", "cilium_ktime_cache"}...)
 	}
 
 	if !option.Config.EnableIPv4FragmentsTracking {
@@ -197,14 +212,6 @@ func (ms *MapSweeper) RemoveDisabledMaps() {
 		maps = append(maps, lbmaps.MaglevOuter6MapName, lbmaps.MaglevOuter4MapName)
 	}
 
-	if !ms.kprCfg.EnableSessionAffinity {
-		maps = append(maps, lbmaps.Affinity6MapName, lbmaps.Affinity4MapName, lbmaps.AffinityMatchMapName)
-	}
-
-	if !ms.kprCfg.EnableSVCSourceRangeCheck {
-		maps = append(maps, lbmaps.SourceRange6MapName, lbmaps.SourceRange4MapName)
-	}
-
 	if !(option.Config.EnableIPMasqAgent && option.Config.EnableIPv4Masquerade) {
 		maps = append(maps, ipmasq.MapNameIPv4)
 	}
@@ -222,10 +229,33 @@ func (ms *MapSweeper) RemoveDisabledMaps() {
 		}...)
 	}
 
-	for _, m := range maps {
-		p := path.Join(bpf.TCGlobalsPath(), m)
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			ms.RemoveMapPath(p)
+	// helper func to check if a map name match any excludes
+	containsExcluded := func(mapName string, excludes []string) bool {
+		for _, ex := range excludes {
+			if strings.Contains(mapName, ex) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// helper func to check if map name matches any prefixedMaps and does not match excludes
+	matchesPrefixedMap := func(mapName string) bool {
+		for _, pm := range prefixedMaps {
+			if !strings.HasPrefix(mapName, pm.Prefix) {
+				continue
+			}
+			if containsExcluded(mapName, pm.Excludes) {
+				continue
+			}
+			return true
+		}
+		return false
+	}
+
+	for _, m := range ms.ListMapsDir(mapsDir) {
+		if slices.Contains(maps, m) || matchesPrefixedMap(m) {
+			ms.RemoveMapPath(path.Join(mapsDir, m))
 		}
 	}
 }

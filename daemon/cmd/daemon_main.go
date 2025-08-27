@@ -46,6 +46,7 @@ import (
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/endpoint"
+	endpointapi "github.com/cilium/cilium/pkg/endpoint/api"
 	endpointcreator "github.com/cilium/cilium/pkg/endpoint/creator"
 	endpointmetadata "github.com/cilium/cilium/pkg/endpoint/metadata"
 	"github.com/cilium/cilium/pkg/endpointmanager"
@@ -63,7 +64,6 @@ import (
 	"github.com/cilium/cilium/pkg/ipam"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/ipcache"
-	"github.com/cilium/cilium/pkg/ipmasq"
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	k8sSynced "github.com/cilium/cilium/pkg/k8s/synced"
 	"github.com/cilium/cilium/pkg/k8s/watchers"
@@ -85,7 +85,6 @@ import (
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
 	"github.com/cilium/cilium/pkg/mtu"
 	"github.com/cilium/cilium/pkg/node"
-	nodeManager "github.com/cilium/cilium/pkg/node/manager"
 	"github.com/cilium/cilium/pkg/nodediscovery"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/pidfile"
@@ -94,7 +93,7 @@ import (
 	"github.com/cilium/cilium/pkg/promise"
 	"github.com/cilium/cilium/pkg/time"
 	"github.com/cilium/cilium/pkg/version"
-	wireguard "github.com/cilium/cilium/pkg/wireguard/agent"
+	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
 
 const (
@@ -122,56 +121,56 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags := cmd.Flags()
 
 	// Validators
-	option.Config.FixedIdentityMappingValidator = option.Validator(func(val string) (string, error) {
+	option.Config.FixedIdentityMappingValidator = option.Validator(func(val string) error {
 		vals := strings.Split(val, "=")
 		if len(vals) != 2 {
-			return "", fmt.Errorf(`invalid fixed identity: expecting "<numeric-identity>=<identity-name>" got %q`, val)
+			return fmt.Errorf(`invalid fixed identity: expecting "<numeric-identity>=<identity-name>" got %q`, val)
 		}
 		ni, err := identity.ParseNumericIdentity(vals[0])
 		if err != nil {
-			return "", fmt.Errorf(`invalid numeric identity %q: %w`, val, err)
+			return fmt.Errorf(`invalid numeric identity %q: %w`, val, err)
 		}
 		if !identity.IsUserReservedIdentity(ni) {
-			return "", fmt.Errorf(`invalid numeric identity %q: valid numeric identity is between %d and %d`,
+			return fmt.Errorf(`invalid numeric identity %q: valid numeric identity is between %d and %d`,
 				val, identity.UserReservedNumericIdentity.Uint32(), identity.MinimalNumericIdentity.Uint32())
 		}
 		lblStr := vals[1]
 		lbl := labels.ParseLabel(lblStr)
 		if lbl.IsReservedSource() {
-			return "", fmt.Errorf(`invalid source %q for label: %s`, labels.LabelSourceReserved, lblStr)
+			return fmt.Errorf(`invalid source %q for label: %s`, labels.LabelSourceReserved, lblStr)
 		}
-		return val, nil
+		return nil
 	})
 
-	option.Config.BPFMapEventBuffersValidator = option.Validator(func(val string) (string, error) {
+	option.Config.BPFMapEventBuffersValidator = option.Validator(func(val string) error {
 		vals := strings.Split(val, "=")
 		if len(vals) != 2 {
-			return "", fmt.Errorf(`invalid bpf map event config: expecting "<map_name>=<enabled>_<max_size>_<ttl>" got %q`, val)
+			return fmt.Errorf(`invalid bpf map event config: expecting "<map_name>=<enabled>_<max_size>_<ttl>" got %q`, val)
 		}
 		_, err := option.ParseEventBufferTupleString(vals[1])
 		if err != nil {
-			return "", err
+			return err
 		}
-		return "", nil
+		return nil
 	})
 
-	option.Config.FixedZoneMappingValidator = option.Validator(func(val string) (string, error) {
+	option.Config.FixedZoneMappingValidator = option.Validator(func(val string) error {
 		vals := strings.Split(val, "=")
 		if len(vals) != 2 {
-			return "", fmt.Errorf(`invalid fixed zone: expecting "<zone-name>=<numeric-id>" got %q`, val)
+			return fmt.Errorf(`invalid fixed zone: expecting "<zone-name>=<numeric-id>" got %q`, val)
 		}
 		lblStr := vals[0]
 		if len(lblStr) == 0 {
-			return "", fmt.Errorf(`invalid label: %q`, lblStr)
+			return fmt.Errorf(`invalid label: %q`, lblStr)
 		}
 		ni, err := strconv.Atoi(vals[1])
 		if err != nil {
-			return "", fmt.Errorf(`invalid numeric ID %q: %w`, vals[1], err)
+			return fmt.Errorf(`invalid numeric ID %q: %w`, vals[1], err)
 		}
 		if min, max := 1, math.MaxUint8; ni < min || ni >= max {
-			return "", fmt.Errorf(`invalid numeric ID %q: valid numeric ID is between %d and %d`, vals[1], min, max)
+			return fmt.Errorf(`invalid numeric ID %q: valid numeric ID is between %d and %d`, vals[1], min, max)
 		}
-		return val, nil
+		return nil
 	})
 
 	// Env bindings
@@ -204,10 +203,6 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.String(option.CGroupRoot, "", "Path to Cgroup2 filesystem")
 	option.BindEnv(vp, option.CGroupRoot)
-
-	flags.StringSlice(option.CompilerFlags, []string{}, "Extra CFLAGS for BPF compilation")
-	flags.MarkHidden(option.CompilerFlags)
-	option.BindEnv(vp, option.CompilerFlags)
 
 	flags.String(option.ConfigFile, "", `Configuration file (default "$HOME/ciliumd.yaml")`)
 	option.BindEnv(vp, option.ConfigFile)
@@ -294,7 +289,7 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.StringSlice(option.IPv6PodSubnets, []string{}, "List of IPv6 pod subnets to preconfigure for encryption")
 	option.BindEnv(vp, option.IPv6PodSubnets)
 
-	flags.Var(option.NewNamedMapOptions(option.IPAMMultiPoolPreAllocation, &option.Config.IPAMMultiPoolPreAllocation, nil),
+	flags.Var(option.NewMapOptions(&option.Config.IPAMMultiPoolPreAllocation),
 		option.IPAMMultiPoolPreAllocation,
 		fmt.Sprintf("Defines the minimum number of IPs a node should pre-allocate from each pool (default %s=8)", defaults.IPAMDefaultIPPool))
 	vp.SetDefault(option.IPAMMultiPoolPreAllocation, "")
@@ -381,9 +376,6 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableIPSecEncryptedOverlay, defaults.EnableIPSecEncryptedOverlay, "Enable IPsec encrypted overlay. If enabled tunnel traffic will be encrypted before leaving the host. Requires ipsec and tunnel mode vxlan to be enabled.")
 	option.BindEnv(vp, option.EnableIPSecEncryptedOverlay)
 
-	flags.Bool(option.EnableWireguard, false, "Enable WireGuard")
-	option.BindEnv(vp, option.EnableWireguard)
-
 	flags.Bool(option.EnableL2Announcements, false, "Enable L2 announcements")
 	option.BindEnv(vp, option.EnableL2Announcements)
 
@@ -396,12 +388,6 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.Duration(option.L2AnnouncerRetryPeriod, 2*time.Second, "Timeout after a renew failure, before the next retry")
 	option.BindEnv(vp, option.L2AnnouncerRetryPeriod)
 
-	flags.Duration(option.WireguardPersistentKeepalive, 0, "The Wireguard keepalive interval as a Go duration string")
-	option.BindEnv(vp, option.WireguardPersistentKeepalive)
-
-	flags.String(option.NodeEncryptionOptOutLabels, defaults.NodeEncryptionOptOutLabels, "Label selector for nodes which will opt-out of node-to-node encryption")
-	option.BindEnv(vp, option.NodeEncryptionOptOutLabels)
-
 	flags.Bool(option.EnableEncryptionStrictMode, false, "Enable encryption strict mode")
 	option.BindEnv(vp, option.EnableEncryptionStrictMode)
 
@@ -411,7 +397,7 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EncryptionStrictModeAllowRemoteNodeIdentities, false, "Allows unencrypted traffic from pods to remote node identities within the strict mode CIDR. This is required when tunneling is used or direct routing is used and the node CIDR and pod CIDR overlap.")
 	option.BindEnv(vp, option.EncryptionStrictModeAllowRemoteNodeIdentities)
 
-	flags.Var(option.NewNamedMapOptions(option.FixedIdentityMapping, &option.Config.FixedIdentityMapping, option.Config.FixedIdentityMappingValidator),
+	flags.Var(option.NewMapOptions(&option.Config.FixedIdentityMapping, option.Config.FixedIdentityMappingValidator),
 		option.FixedIdentityMapping, "Key-value for the fixed identity mapping which allows to use reserved label for fixed identities, e.g. 128=kv-store,129=kube-dns")
 	option.BindEnv(vp, option.FixedIdentityMapping)
 
@@ -477,10 +463,6 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.MarkHidden(option.AddressScopeMax)
 	option.BindEnv(vp, option.AddressScopeMax)
 
-	flags.Bool(option.EnableRecorder, false, "Enable BPF datapath pcap recorder")
-	flags.MarkDeprecated(option.EnableRecorder, "The feature will be removed in v1.19")
-	option.BindEnv(vp, option.EnableRecorder)
-
 	flags.Bool(option.EnableLocalRedirectPolicy, false, "Enable Local Redirect Policy")
 	option.BindEnv(vp, option.EnableLocalRedirectPolicy)
 
@@ -517,10 +499,6 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 		option.NodePortAccelerationNative, option.NodePortAccelerationDisabled))
 	option.BindEnv(vp, option.LoadBalancerAcceleration)
 
-	flags.Bool(option.LoadBalancerProtocolDifferentiation, true, "Enable support for service protocol differentiation (TCP, UDP, SCTP)")
-	flags.MarkDeprecated(option.LoadBalancerProtocolDifferentiation, "The flag to control service protocol differentiation has been deprecated, and it will be removed in v1.19. The feature will be unconditionally enabled.")
-	option.BindEnv(vp, option.LoadBalancerProtocolDifferentiation)
-
 	flags.Bool(option.EnableAutoProtectNodePortRange, true,
 		"Append NodePort range to net.ipv4.ip_local_reserved_ports if it overlaps "+
 			"with ephemeral port range (net.ipv4.ip_local_port_range)")
@@ -553,7 +531,7 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.StringSlice(option.LogDriver, []string{}, "Logging endpoints to use for example syslog")
 	option.BindEnv(vp, option.LogDriver)
 
-	flags.Var(option.NewNamedMapOptions(option.LogOpt, &option.Config.LogOpt, nil),
+	flags.Var(option.NewMapOptions(&option.Config.LogOpt),
 		option.LogOpt, `Log driver options for cilium-agent, `+
 			`configmap example for syslog driver: {"syslog.level":"info","syslog.facility":"local5","syslog.tag":"cilium-agent"}`)
 	option.BindEnv(vp, option.LogOpt)
@@ -568,6 +546,9 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableIPv4Masquerade, true, "Masquerade IPv4 traffic from endpoints leaving the host")
 	option.BindEnv(vp, option.EnableIPv4Masquerade)
 
+	flags.Bool(option.EnableRemoteNodeMasquerade, false, "Masquerade packets from endpoints leaving the host destined to a remote node in BPF masquerading mode. This option requires to set enable-bpf-masquerade to true.")
+	option.BindEnv(vp, option.EnableRemoteNodeMasquerade)
+
 	flags.Bool(option.EnableIPv6Masquerade, true, "Masquerade IPv6 traffic from endpoints leaving the host")
 	option.BindEnv(vp, option.EnableIPv6Masquerade)
 
@@ -576,9 +557,6 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.Bool(option.EnableMasqueradeRouteSource, false, "Masquerade packets to the source IP provided from the routing layer rather than interface address")
 	option.BindEnv(vp, option.EnableMasqueradeRouteSource)
-
-	flags.Bool(option.EnableIPMasqAgent, false, "Enable BPF ip-masq-agent")
-	option.BindEnv(vp, option.EnableIPMasqAgent)
 
 	flags.Bool(option.EnableIPv4EgressGateway, false, "Enable egress gateway for IPv4")
 	flags.MarkDeprecated(option.EnableIPv4EgressGateway, "Use --enable-egress-gateway instead")
@@ -590,14 +568,11 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.Bool(option.EnableEnvoyConfig, false, "Enable Envoy Config CRDs")
 	option.BindEnv(vp, option.EnableEnvoyConfig)
 
-	flags.String(option.IPMasqAgentConfigPath, "/etc/config/ip-masq-agent", "ip-masq-agent configuration file path")
-	option.BindEnv(vp, option.IPMasqAgentConfigPath)
-
 	flags.Bool(option.InstallIptRules, true, "Install base iptables rules for cilium to mainly interact with kube-proxy (and masquerading)")
 	flags.MarkHidden(option.InstallIptRules)
 	option.BindEnv(vp, option.InstallIptRules)
 
-	flags.Int(option.MaxCtrlIntervalName, 0, "Maximum interval (in seconds) between controller runs. Zero is no limit.")
+	flags.Uint(option.MaxCtrlIntervalName, 0, "Maximum interval (in seconds) between controller runs. Zero is no limit.")
 	flags.MarkHidden(option.MaxCtrlIntervalName)
 	option.BindEnv(vp, option.MaxCtrlIntervalName)
 
@@ -719,9 +694,6 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.Int(option.ToFQDNsMaxIPsPerHost, defaults.ToFQDNsMaxIPsPerHost, "Maximum number of IPs to maintain per FQDN name for each endpoint")
 	option.BindEnv(vp, option.ToFQDNsMaxIPsPerHost)
 
-	flags.Int(option.DNSMaxIPsPerRestoredRule, defaults.DNSMaxIPsPerRestoredRule, "Maximum number of IPs to maintain for each restored DNS rule")
-	option.BindEnv(vp, option.DNSMaxIPsPerRestoredRule)
-
 	flags.Bool(option.DNSPolicyUnloadOnShutdown, false, "Unload DNS policy rules on graceful shutdown")
 	option.BindEnv(vp, option.DNSPolicyUnloadOnShutdown)
 
@@ -734,21 +706,15 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.Duration(option.FQDNProxyResponseMaxDelay, defaults.FQDNProxyResponseMaxDelay, "The maximum time the DNS proxy holds an allowed DNS response before sending it along. Responses are sent as soon as the datapath is updated with the new IP information.")
 	option.BindEnv(vp, option.FQDNProxyResponseMaxDelay)
 
-	flags.Int(option.FQDNRegexCompileLRUSize, defaults.FQDNRegexCompileLRUSize, "Size of the FQDN regex compilation LRU. Useful for heavy but repeated DNS L7 rules with MatchName or MatchPattern")
+	flags.Uint(option.FQDNRegexCompileLRUSize, defaults.FQDNRegexCompileLRUSize, "Size of the FQDN regex compilation LRU. Useful for heavy but repeated DNS L7 rules with MatchName or MatchPattern")
 	flags.MarkHidden(option.FQDNRegexCompileLRUSize)
 	option.BindEnv(vp, option.FQDNRegexCompileLRUSize)
 
 	flags.String(option.ToFQDNsPreCache, defaults.ToFQDNsPreCache, "DNS cache data at this path is preloaded on agent startup")
 	option.BindEnv(vp, option.ToFQDNsPreCache)
 
-	flags.Bool(option.ToFQDNsEnableDNSCompression, defaults.ToFQDNsEnableDNSCompression, "Allow the DNS proxy to compress responses to endpoints that are larger than 512 Bytes or the EDNS0 option, if present")
-	option.BindEnv(vp, option.ToFQDNsEnableDNSCompression)
-
 	flags.Int(option.DNSProxyConcurrencyLimit, 0, "Limit concurrency of DNS message processing")
 	option.BindEnv(vp, option.DNSProxyConcurrencyLimit)
-
-	flags.Duration(option.DNSProxyConcurrencyProcessingGracePeriod, 0, "Grace time to wait when DNS proxy concurrent limit has been reached during DNS message processing")
-	option.BindEnv(vp, option.DNSProxyConcurrencyProcessingGracePeriod)
 
 	flags.Int(option.DNSProxyLockCount, defaults.DNSProxyLockCount, "Array size containing mutexes which protect against parallel handling of DNS response names. Preferably use prime numbers")
 	flags.MarkHidden(option.DNSProxyLockCount)
@@ -805,7 +771,7 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.String(option.LocalRouterIPv6, "", "Link-local IPv6 used for Cilium's router devices")
 	option.BindEnv(vp, option.LocalRouterIPv6)
 
-	flags.Var(option.NewNamedMapOptions(option.BPFMapEventBuffers, &option.Config.BPFMapEventBuffers, option.Config.BPFMapEventBuffersValidator), option.BPFMapEventBuffers, "Configuration for BPF map event buffers: (example: --bpf-map-event-buffers cilium_ipcache_v2=enabled_1024_1h)")
+	flags.Var(option.NewMapOptions(&option.Config.BPFMapEventBuffers, option.Config.BPFMapEventBuffersValidator), option.BPFMapEventBuffers, "Configuration for BPF map event buffers: (example: --bpf-map-event-buffers cilium_ipcache_v2=enabled_1024_1h)")
 	flags.MarkHidden(option.BPFMapEventBuffers)
 
 	flags.Bool(option.EgressMultiHomeIPRuleCompat, false,
@@ -914,17 +880,9 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 	flags.StringSlice(option.NodeLabels, []string{}, "List of label prefixes used to determine identity of a node (used only when enable-node-selector-labels is enabled)")
 	option.BindEnv(vp, option.NodeLabels)
 
-	flags.Bool(option.EnableInternalTrafficPolicy, defaults.EnableInternalTrafficPolicy, "Enable internal traffic policy")
-	flags.MarkDeprecated(option.EnableInternalTrafficPolicy, "The flag will be removed in v1.19. The feature will be unconditionally enabled by default.")
-	option.BindEnv(vp, option.EnableInternalTrafficPolicy)
-
 	flags.Bool(option.EnableNonDefaultDenyPolicies, defaults.EnableNonDefaultDenyPolicies, "Enable use of non-default-deny policies")
 	flags.MarkHidden(option.EnableNonDefaultDenyPolicies)
 	option.BindEnv(vp, option.EnableNonDefaultDenyPolicies)
-
-	flags.Bool(option.WireguardTrackAllIPsFallback, defaults.WireguardTrackAllIPsFallback, "Force WireGuard to track all IPs")
-	flags.MarkHidden(option.WireguardTrackAllIPsFallback)
-	option.BindEnv(vp, option.WireguardTrackAllIPsFallback)
 
 	flags.Bool(option.EnableEndpointLockdownOnPolicyOverflow, false, "When an endpoint's policy map overflows, shutdown all (ingress and egress) network traffic for that endpoint.")
 	option.BindEnv(vp, option.EnableEndpointLockdownOnPolicyOverflow)
@@ -935,6 +893,9 @@ func InitGlobalFlags(logger *slog.Logger, cmd *cobra.Command, vp *viper.Viper) {
 
 	flags.Float64(option.ConnectivityProbeFrequencyRatio, defaults.ConnectivityProbeFrequencyRatio, "Ratio of the connectivity probe frequency vs resource usage, a float in [0, 1]. 0 will give more frequent probing, 1 will give less frequent probing. Probing frequency is dynamically adjusted based on the cluster size.")
 	option.BindEnv(vp, option.ConnectivityProbeFrequencyRatio)
+
+	flags.Bool(option.EnableExtendedIPProtocols, defaults.EnableExtendedIPProtocols, "Enable traffic with extended IP protocols in datapath")
+	option.BindEnv(vp, option.EnableExtendedIPProtocols)
 
 	if err := vp.BindPFlags(flags); err != nil {
 		logging.Fatal(logger, "BindPFlags failed", logfields.Error, err)
@@ -1074,10 +1035,6 @@ func initEnv(logger *slog.Logger, vp *viper.Viper) {
 		logging.Fatal(scopedLog, "Could not create envoy sockets directory", logfields.Error, err)
 	}
 
-	if option.Config.MaxControllerInterval < 0 {
-		logging.Fatal(scopedLog, fmt.Sprintf("Invalid %s value %d", option.MaxCtrlIntervalName, option.Config.MaxControllerInterval))
-	}
-
 	// set rlimit Memlock to INFINITY before creating any bpf resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		logging.Fatal(scopedLog, "unable to set memory resource limits", logfields.Error, err)
@@ -1213,6 +1170,10 @@ func initEnv(logger *slog.Logger, vp *viper.Viper) {
 		logger.Warn("IPSec encrypted overlay is enabled but IPSec is not. Ignoring option.")
 	}
 
+	if option.Config.EnableRemoteNodeMasquerade && !option.Config.EnableBPFMasquerade {
+		logging.Fatal(logger, "Option "+option.EnableRemoteNodeMasquerade+" requires BPF masquerade to be enabled ("+option.EnableBPFMasquerade+")")
+	}
+
 	if option.Config.TunnelingEnabled() && option.Config.EnableAutoDirectRouting {
 		logging.Fatal(logger, fmt.Sprintf("%s cannot be used with tunneling. Packets must be routed through the tunnel device.", option.EnableAutoDirectRoutingName))
 	}
@@ -1287,10 +1248,6 @@ func initEnv(logger *slog.Logger, vp *viper.Viper) {
 		logging.Fatal(logger, fmt.Sprintf("Cannot specify IPAM mode %s in tunnel mode.", option.Config.IPAM))
 	}
 
-	if option.Config.IPAM == ipamOption.IPAMMultiPool && option.Config.EnableIPSec && !option.Config.TunnelingEnabled() {
-		logging.Fatal(logger, fmt.Sprintf("IPAM mode %s with %s is supported only in tunnel mode.", option.Config.IPAM, option.EnableIPSecName))
-	}
-
 	if option.Config.InstallNoConntrackIptRules {
 		// InstallNoConntrackIptRules can only be enabled in direct
 		// routing mode as in tunneling mode the encapsulated traffic is
@@ -1361,7 +1318,7 @@ type daemonParams struct {
 	MetricsRegistry     *metrics.Registry
 	Clientset           k8sClient.Clientset
 	KVStoreClient       kvstore.Client
-	WGAgent             *wireguard.Agent
+	WGAgent             wgTypes.WireguardAgent
 	LocalNodeStore      *node.LocalNodeStore
 	Shutdowner          hive.Shutdowner
 	Resources           agentK8s.Resources
@@ -1369,7 +1326,6 @@ type daemonParams struct {
 	CacheStatus         k8sSynced.CacheStatus
 	K8sResourceSynced   *k8sSynced.Resources
 	K8sAPIGroups        *k8sSynced.APIGroups
-	NodeManager         nodeManager.NodeManager
 	NodeHandler         datapath.NodeHandler
 	NodeAddressing      datapath.NodeAddressing
 	EndpointCreator     endpointcreator.EndpointCreator
@@ -1414,6 +1370,7 @@ type daemonParams struct {
 	DNSProxy            bootstrap.FQDNProxyBootstrapper
 	DNSNameManager      namemanager.NameManager
 	KPRConfig           kpr.KPRConfig
+	EndpointAPIFence    endpointapi.Fence
 }
 
 func newDaemonPromise(params daemonParams) (promise.Promise[*Daemon], legacy.DaemonInitialization) {
@@ -1532,30 +1489,6 @@ func startDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *da
 	params.CTNATMapGC.Observe6().Observe(d.ctx, ctmap.NatMapNext6, func(err error) {})
 	bootstrapStats.enableConntrack.End(true)
 
-	if params.WGAgent != nil {
-		go func() {
-			// Wait until the kvstore synchronization completed, to avoid
-			// causing connectivity blips due incorrectly removing
-			// WireGuard peers that have not yet been discovered.
-			// WaitForKVStoreSync returns immediately in CRD mode.
-			if err := d.nodeDiscovery.WaitForKVStoreSync(d.ctx); err != nil {
-				return
-			}
-
-			// When running in KVStore mode, we need to additionally wait until
-			// we have discovered all remote IP addresses, to prevent triggering
-			// the collection of stale AllowedIPs entries too early, leading to
-			// the disruption of otherwise valid long running connections.
-			if err := params.IPIdentityWatcher.WaitForSync(d.ctx); err != nil {
-				return
-			}
-
-			if err := params.WGAgent.RestoreFinished(d.clustermesh); err != nil {
-				d.logger.Error("Failed to set up WireGuard peers", logfields.Error, err)
-			}
-		}()
-	}
-
 	if d.endpointManager.HostEndpointExists() {
 		d.endpointManager.InitHostEndpointLabels(d.ctx)
 	} else {
@@ -1580,14 +1513,6 @@ func startDaemon(d *Daemon, restoredEndpoints *endpointRestoreState, cleaner *da
 				}
 			}
 		}
-	}
-
-	if option.Config.EnableIPMasqAgent {
-		ipmasqAgent, err := ipmasq.NewIPMasqAgent(d.logger, d.metricsRegistry, option.Config.IPMasqAgentConfigPath)
-		if err != nil {
-			return fmt.Errorf("failed to create ipmasq agent: %w", err)
-		}
-		ipmasqAgent.Start()
 	}
 
 	go func() {

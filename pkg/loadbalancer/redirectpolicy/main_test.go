@@ -6,9 +6,9 @@ package redirectpolicy
 import (
 	"testing"
 
-	"go.uber.org/goleak"
+	"github.com/cilium/cilium/pkg/testutils"
 )
 
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
+	testutils.GoleakVerifyTestMain(m)
 }

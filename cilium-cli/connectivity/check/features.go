@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/blang/semver/v4"
-	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,6 +21,7 @@ import (
 	"github.com/cilium/cilium/cilium-cli/internal/helm"
 	"github.com/cilium/cilium/cilium-cli/k8s"
 	"github.com/cilium/cilium/cilium-cli/utils/features"
+	slimcorev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 )
 
 func parseBoolStatus(s string) bool {
@@ -79,9 +79,13 @@ func (ct *ConnectivityTest) extractFeaturesFromRuntimeConfig(ctx context.Context
 		Enabled: cfg.EnableHealthChecking && cfg.EnableEndpointHealthChecking,
 	}
 
-	result[features.EncryptionNode] = features.Status{
-		Enabled: cfg.EncryptNode,
-		Mode:    cfg.NodeEncryptionOptOutLabelsString,
+	// Before v1.19, NodeEncryptionOptOutLabels are stored in DaemonConfig.
+	// See [extractFeaturesFromCiliumStatus] for above versions.
+	if ct.CiliumVersion.LT(semver.MustParse("1.19.0")) {
+		result[features.EncryptionNode] = features.Status{
+			Enabled: cfg.EncryptNode,
+			Mode:    cfg.NodeEncryptionOptOutLabelsString,
+		}
 	}
 
 	result[features.KNP] = features.Status{
@@ -194,6 +198,18 @@ func (ct *ConnectivityTest) extractFeaturesFromCiliumStatus(ctx context.Context,
 	mode = "disabled"
 	if enc := st.Encryption; enc != nil {
 		mode = strings.ToLower(enc.Mode)
+
+		// After v1.19, NodeEncryptionOptOutLabels are stored in the Wireguard Agent config.
+		// See [extractFeaturesFromRuntimeConfig] for below versions.
+		if ct.CiliumVersion.GE(semver.MustParse("1.19.0")) {
+			// Node-to-node encryption applies only to WireGuard.
+			if wg := enc.Wireguard; wg != nil {
+				result[features.EncryptionNode] = features.Status{
+					Enabled: wg.NodeEncryption != "Disabled",
+					Mode:    wg.NodeEncryptOptOutLabels,
+				}
+			}
+		}
 	}
 	result[features.EncryptionPod] = features.Status{
 		Enabled: mode != "disabled",
@@ -323,37 +339,43 @@ func (ct *ConnectivityTest) detectFeatures(ctx context.Context) error {
 	if cm.Data == nil {
 		return fmt.Errorf("ConfigMap %q does not contain any configuration", defaults.ConfigMapName)
 	}
-	for _, ciliumPod := range ct.ciliumPods {
-		features := features.Set{}
 
-		// If unsure from which source to retrieve the information from,
-		// prefer "CiliumStatus" over "ConfigMap" over "RuntimeConfig".
-		// See the corresponding functions for more information.
-		features.ExtractFromVersionedConfigMap(ct.CiliumVersion, cm)
-		features.ExtractFromConfigMap(cm)
+	// Extract cluster-wide features once outside the loop
+	clusterFeatures := features.Set{}
+	clusterFeatures.ExtractFromCiliumVersion(ct.CiliumVersion)
+	clusterFeatures.ExtractFromConfigMap(cm)
+	clusterFeatures.ExtractFromNodes(ct.nodesWithoutCilium)
+	ct.extractFeaturesFromK8sCluster(ctx, clusterFeatures)
+	err = ct.extractFeaturesFromCRDs(ctx, clusterFeatures)
+	if err != nil {
+		return err
+	}
+	err = ct.extractFeaturesFromDNSConfig(ctx, clusterFeatures)
+	if err != nil {
+		return err
+	}
+	err = ct.extractFeaturesFromClusterRole(ctx, ct.client, clusterFeatures)
+	if err != nil {
+		return err
+	}
+
+	for _, ciliumPod := range ct.ciliumPods {
+		// Start with cluster-wide features
+		features := make(features.Set)
+		for k, v := range clusterFeatures {
+			features[k] = v
+		}
+
+		// Extract pod-specific features
 		err = ct.extractFeaturesFromRuntimeConfig(ctx, ciliumPod, features)
 		if err != nil {
 			return err
 		}
-		features.ExtractFromNodes(ct.nodesWithoutCilium)
 		err = ct.extractFeaturesFromCiliumStatus(ctx, ciliumPod, features)
 		if err != nil {
 			return err
 		}
-		err = ct.extractFeaturesFromClusterRole(ctx, ciliumPod.K8sClient, features)
-		if err != nil {
-			return err
-		}
-		ct.extractFeaturesFromK8sCluster(ctx, features)
 		err = features.DeriveFeatures()
-		if err != nil {
-			return err
-		}
-		err = ct.extractFeaturesFromCRDs(ctx, features)
-		if err != nil {
-			return err
-		}
-		err = ct.extractFeaturesFromDNSConfig(ctx, features)
 		if err != nil {
 			return err
 		}
@@ -383,12 +405,12 @@ func (ct *ConnectivityTest) ForceDisableFeature(feature features.Feature) {
 	ct.Features[feature] = features.Status{Enabled: false}
 }
 
-func canNodeRunCilium(node *corev1.Node) bool {
+func canNodeRunCilium(node *slimcorev1.Node) bool {
 	val, ok := node.ObjectMeta.Labels["cilium.io/no-schedule"]
 	return !ok || val == "false"
 }
 
-func isControlPlane(node *corev1.Node) bool {
+func isControlPlane(node *slimcorev1.Node) bool {
 	if node != nil {
 		_, ok := node.Labels["node-role.kubernetes.io/control-plane"]
 		return ok

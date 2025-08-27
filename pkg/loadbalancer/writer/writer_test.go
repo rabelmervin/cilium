@@ -47,7 +47,7 @@ func fixture(t testing.TB) (p testParams) {
 
 	h := hive.New(
 		loadbalancer.ConfigCell,
-		node.LocalNodeStoreCell,
+		node.LocalNodeStoreTestCell,
 		Cell,
 		cell.Provide(
 			func() *option.DaemonConfig { return &option.DaemonConfig{} },
@@ -56,7 +56,6 @@ func fixture(t testing.TB) (p testParams) {
 			source.NewSources,
 			func() kpr.KPRConfig { return kpr.KPRConfig{} },
 		),
-		cell.Invoke(statedb.RegisterTable[tables.NodeAddress]),
 		cell.Invoke(func(p_ testParams) { p = p_ }),
 	)
 
@@ -103,7 +102,7 @@ func TestWriter_Service_UpsertDelete(t *testing.T) {
 				ServiceName: name,
 				Address:     frontend,
 				Type:        loadbalancer.SVCTypeClusterIP,
-				ServicePort: frontend.Port,
+				ServicePort: frontend.Port(),
 			},
 		)
 		require.NoError(t, err, "UpsertServiceAndFrontends")
@@ -213,7 +212,7 @@ func TestWriter_Backend_UpsertDelete(t *testing.T) {
 			loadbalancer.FrontendParams{
 				Address:     frontend,
 				Type:        loadbalancer.SVCTypeClusterIP,
-				ServicePort: frontend.Port,
+				ServicePort: frontend.Port(),
 			})
 
 		require.NoError(t, err, "UpsertService failed")
@@ -264,20 +263,20 @@ func TestWriter_Backend_UpsertDelete(t *testing.T) {
 		for _, addr := range []loadbalancer.L3n4Addr{beAddr1, beAddr2, beAddr3} {
 			be, _, found := p.BackendTable.Get(txn, loadbalancer.BackendByAddress(addr))
 			if assert.True(t, found, "Backend not found with address %s", addr) {
-				assert.True(t, be.Address.DeepEqual(&addr), "Backend address %s does not match %s", be.Address, addr)
+				assert.Equal(t, addr, be.Address, "Backend address %s does not match %s", be.Address, addr)
 			}
 		}
 
 		// By service
 		bes := statedb.Collect(p.BackendTable.List(txn, loadbalancer.BackendByServiceName(name1)))
 		require.Len(t, bes, 2)
-		require.True(t, bes[0].Address.DeepEqual(&beAddr1))
-		require.True(t, bes[1].Address.DeepEqual(&beAddr2))
+		require.Equal(t, beAddr1, bes[0].Address)
+		require.Equal(t, beAddr2, bes[1].Address)
 
 		// Backends for [name2] can be found even though the service doesn't exist (yet).
 		bes = statedb.Collect(p.BackendTable.List(txn, loadbalancer.BackendByServiceName(name2)))
 		require.Len(t, bes, 1)
-		require.True(t, bes[0].Address.DeepEqual(&beAddr3))
+		require.Equal(t, beAddr3, bes[0].Address)
 	}
 
 	// ReleaseBackend

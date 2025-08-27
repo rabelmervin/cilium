@@ -16,7 +16,7 @@ import (
 	"github.com/cilium/cilium/pkg/testutils"
 )
 
-func TestGetBPFUsage(t *testing.T) {
+func TestPrivilegedGetBPFUsage(t *testing.T) {
 	testutils.PrivilegedTest(t)
 
 	prefix := "_ciltest_"
@@ -46,7 +46,7 @@ func TestGetBPFUsage(t *testing.T) {
 	assert.NotEqualValues(t, 0, usage.mapBytes)
 }
 
-func BenchmarkGetBPFUsage(b *testing.B) {
+func BenchmarkPrivilegedGetBPFUsage(b *testing.B) {
 	testutils.PrivilegedTest(b)
 	b.ReportAllocs()
 

@@ -864,10 +864,7 @@ func (cmd *Cmd) Del(args *skel.CmdArgs) error {
 	}
 	scopedLogger = buildLogAttrsWithCNIArgs(scopedLogger, cniArgs)
 
-	c, err := lib.NewDeletionFallbackClient(scopedLogger)
-	if err != nil {
-		return fmt.Errorf("unable to connect to Cilium agent: %w", err)
-	}
+	c := lib.NewDeletionFallbackClient(scopedLogger)
 
 	// If this is a chained plugin, then "delegate" to the special chaining mode and be done.
 	// Note: DEL always has PrevResult set, so that doesn't tell us if we're chained. Given
@@ -894,6 +891,11 @@ func (cmd *Cmd) Del(args *skel.CmdArgs) error {
 
 	req := &models.EndpointBatchDeleteRequest{ContainerID: args.ContainerID}
 	if err := c.EndpointDeleteMany(req); err != nil {
+		if errors.Is(err, lib.ErrClientFailure) {
+			scopedLogger.Error("Failed to delete endpoint", logfields.Error, err)
+			return err
+		}
+
 		// EndpointDeleteMany returns an error in the following scenarios:
 		// DeleteEndpointInvalid: Invalid delete parameters, no need to retry
 		// DeleteEndpointNotFound: No need to retry
@@ -915,6 +917,27 @@ func (cmd *Cmd) Del(args *skel.CmdArgs) error {
 
 	ns, err := netns.OpenPinned(args.Netns)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// We are not returning an error if the network namespace does not exist.
+			// In that case, we assume that the interface has already been deleted.
+			// Reference https://github.com/kubernetes/kubernetes/issues/133081
+			scopedLogger.Warn(
+				"Unable to open network namespace, will not delete interface",
+				logfields.Error, fmt.Errorf("namespace %s no longer exist: %w", args.Netns, err),
+				logfields.Interface, args.IfName,
+				logfields.NetNamespace, args.Netns,
+			)
+			return nil
+		}
+		// If we cannot open the network namespace, we cannot delete the interface.
+		// This is a fatal error, as we cannot proceed with the deletion.
+		// We return an error to indicate that the deletion failed.
+		scopedLogger.Warn(
+			"Unable to open network namespace, will not delete interface",
+			logfields.Error, fmt.Errorf("opening netns pinned at %s: %w", args.Netns, err),
+			logfields.Interface, args.IfName,
+			logfields.NetNamespace, args.Netns,
+		)
 		return fmt.Errorf("opening netns pinned at %s: %w", args.Netns, err)
 	}
 	defer ns.Close()
@@ -930,6 +953,7 @@ func (cmd *Cmd) Del(args *skel.CmdArgs) error {
 		// We are not returning an error as this is very unlikely to be recoverable
 	}
 
+	scopedLogger.Debug("CNI DEL processing complete")
 	return nil
 }
 

@@ -60,17 +60,16 @@ type GetNodeAddresses interface {
 
 // NodeDiscovery represents a node discovery action
 type NodeDiscovery struct {
-	logger                *slog.Logger
-	Manager               nodemanager.NodeManager
-	Registrar             nodestore.NodeRegistrar
-	Registered            chan struct{}
-	localStateInitialized chan struct{}
-	cniConfigManager      cni.CNIConfigManager
-	k8sGetters            k8sGetters
-	localNodeStore        *node.LocalNodeStore
-	clientset             client.Clientset
-	kvstoreClient         kvstore.Client
-	ctrlmgr               *controller.Manager
+	logger           *slog.Logger
+	Manager          nodemanager.NodeManager
+	Registrar        nodestore.NodeRegistrar
+	Registered       chan struct{}
+	cniConfigManager cni.CNIConfigManager
+	k8sGetters       k8sGetters
+	localNodeStore   *node.LocalNodeStore
+	clientset        client.Clientset
+	kvstoreClient    kvstore.Client
+	ctrlmgr          *controller.Manager
 }
 
 // NewNodeDiscovery returns a pointer to new node discovery object
@@ -84,31 +83,36 @@ func NewNodeDiscovery(
 	k8sNodeWatcher *watchers.K8sCiliumNodeWatcher,
 ) *NodeDiscovery {
 	return &NodeDiscovery{
-		logger:                logger,
-		Manager:               manager,
-		localNodeStore:        lns,
-		Registered:            make(chan struct{}),
-		localStateInitialized: make(chan struct{}),
-		cniConfigManager:      cniConfigManager,
-		clientset:             clientset,
-		kvstoreClient:         kvstoreClient,
-		ctrlmgr:               controller.NewManager(),
-		k8sGetters:            k8sNodeWatcher,
+		logger:           logger,
+		Manager:          manager,
+		localNodeStore:   lns,
+		Registered:       make(chan struct{}),
+		cniConfigManager: cniConfigManager,
+		clientset:        clientset,
+		kvstoreClient:    kvstoreClient,
+		ctrlmgr:          controller.NewManager(),
+		k8sGetters:       k8sNodeWatcher,
 	}
 }
 
 // start configures the local node and starts node discovery. This is called on
 // agent startup to configure the local node based on the configuration options
 // passed to the agent. nodeName is the name to be used in the local agent.
+//
+// NOTE: StartDiscovery is manually called from newDaemon after the Wireguard and
+// IPSec cells have been initialized, as they modify the local node. This requires
+// the daemon to always hold references to both cells to ensure they're started first.
+// Keep this behavior in mind when modifying this function, its cell, or the daemon.
 func (n *NodeDiscovery) StartDiscovery(ctx context.Context) {
 	// Start observing local node changes, so that we keep the corresponding CiliumNode
 	// and kvstore representations in sync. The first update is performed synchronously
 	// so that they are guaranteed to exist when StartDiscovery returns.
-	updates := stream.ToChannel(ctx,
-		// Coalescence events that are emitted almost at the same time, to prevent
-		// consecutive updates from triggering multiple CiliumNode/kvstore updates.
-		stream.Debounce(n.localNodeStore, 250*time.Millisecond))
-	localNode := <-updates
+	updates := stream.ToChannel(ctx, n.localNodeStore)
+	localNode, found := <-updates
+	if !found {
+		n.logger.Error("Aborting node discovery as  no local node received")
+		return
+	}
 
 	go func() {
 		n.logger.Info(
@@ -135,7 +139,6 @@ func (n *NodeDiscovery) StartDiscovery(ctx context.Context) {
 	}()
 
 	n.Manager.NodeUpdated(localNode.Node)
-	close(n.localStateInitialized)
 
 	n.updateLocalNode(ctx, &localNode)
 
@@ -150,13 +153,6 @@ func (n *NodeDiscovery) StartDiscovery(ctx context.Context) {
 			n.updateLocalNode(ctx, &ln)
 		}
 	}()
-}
-
-// WaitForLocalNodeInit blocks until StartDiscovery() has been called.  This is used to block until
-// Node's local IP addresses have been allocated, see https://github.com/cilium/cilium/pull/14299
-// and https://github.com/cilium/cilium/pull/14670.
-func (n *NodeDiscovery) WaitForLocalNodeInit() {
-	<-n.localStateInitialized
 }
 
 // WaitForKVStoreSync blocks until kvstore synchronization of node information
@@ -186,7 +182,7 @@ func (n *NodeDiscovery) updateLocalNode(ctx context.Context, ln *node.LocalNode)
 					}
 
 					err := n.Registrar.UpdateLocalKeySync(ctx, &ln.Node)
-					if err != nil {
+					if err != nil && !errors.Is(err, context.Canceled) {
 						n.logger.Error("Unable to propagate local node change to kvstore", logfields.Error, err)
 					}
 					return err
@@ -301,7 +297,7 @@ func (n *NodeDiscovery) mutateNodeResource(ctx context.Context, nodeResource *ci
 		APIVersion: "v1",
 		Kind:       "Node",
 		Name:       ln.Name,
-		UID:        ln.UID,
+		UID:        ln.Local.UID,
 	}}
 
 	nodeResource.ObjectMeta.Labels = ln.Labels
@@ -464,10 +460,10 @@ func (n *NodeDiscovery) mutateNodeResource(ctx context.Context, nodeResource *ci
 		nodeResource.Spec.ENI.NodeSubnetID = subnetID
 
 	case ipamOption.IPAMAzure:
-		if ln.ProviderID == "" {
+		if ln.Local.ProviderID == "" {
 			logging.Fatal(n.logger, "Spec.ProviderID in k8s node resource must be set for Azure IPAM")
 		}
-		if !strings.HasPrefix(ln.ProviderID, azureTypes.ProviderPrefix) {
+		if !strings.HasPrefix(ln.Local.ProviderID, azureTypes.ProviderPrefix) {
 			logging.Fatal(n.logger, fmt.Sprintf("Spec.ProviderID in k8s node resource must have prefix %s", azureTypes.ProviderPrefix))
 		}
 		// The Azure controller in Kubernetes creates a mix of upper
@@ -475,7 +471,7 @@ func (n *NodeDiscovery) mutateNodeResource(ctx context.Context, nodeResource *ci
 		// therefore not providing the exact representation of what is
 		// returned by the Azure API. Convert it to lower case for
 		// consistent results.
-		nodeResource.Spec.InstanceID = strings.ToLower(strings.TrimPrefix(ln.ProviderID, azureTypes.ProviderPrefix))
+		nodeResource.Spec.InstanceID = strings.ToLower(strings.TrimPrefix(ln.Local.ProviderID, azureTypes.ProviderPrefix))
 
 		if c := n.cniConfigManager.GetCustomNetConf(); c != nil {
 			if c.IPAM.MinAllocate != 0 {

@@ -18,6 +18,7 @@ import (
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/common"
+	"github.com/cilium/cilium/pkg/datapath/tunnel"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
@@ -193,13 +194,13 @@ func clone(ip net.IP) net.IP {
 
 // GetServiceLoopbackIPv4 returns the service loopback IPv4 address of this node.
 func GetServiceLoopbackIPv4(logger *slog.Logger) net.IP {
-	return getLocalNode(logger).ServiceLoopbackIPv4
+	return getLocalNode(logger).Local.ServiceLoopbackIPv4
 }
 
 // SetIPv4Loopback sets the service loopback IPv4 address of this node.
 func SetServiceLoopbackIPv4(ip net.IP) {
 	localNode.Update(func(n *LocalNode) {
-		n.ServiceLoopbackIPv4 = ip
+		n.Local.ServiceLoopbackIPv4 = ip
 	})
 }
 
@@ -247,7 +248,8 @@ func GetInternalIPv6(logger *slog.Logger) net.IP {
 // GetCiliumEndpointNodeIP is the node IP that will be referenced by CiliumEndpoints with endpoints
 // running on this node.
 func GetCiliumEndpointNodeIP(logger *slog.Logger) string {
-	if option.Config.EnableIPv4 {
+	n := getLocalNode(logger)
+	if option.Config.EnableIPv4 && n.Local.UnderlayProtocol == tunnel.IPv4 {
 		return GetIPv4(logger).String()
 	}
 	return GetIPv6(logger).String()
@@ -468,7 +470,7 @@ func SetIPsecKeyIdentity(id uint8) {
 }
 
 func GetOptOutNodeEncryption(logger *slog.Logger) bool {
-	return getLocalNode(logger).OptOutNodeEncryption
+	return getLocalNode(logger).Local.OptOutNodeEncryption
 }
 
 // SetEndpointHealthIPv4 sets the IPv4 cilium-health endpoint address.
@@ -526,11 +528,11 @@ func GetIngressIPv6(logger *slog.Logger) net.IP {
 // Note that the key index returned by this function is only valid for _endpoints_
 // of the local node. If you want to obtain the key index of the local node itself,
 // access the `EncryptionKey` field via the LocalNodeStore.
-func GetEndpointEncryptKeyIndex(logger *slog.Logger) uint8 {
+func GetEndpointEncryptKeyIndex(logger *slog.Logger, wgCfg wgTypes.WireguardConfig) uint8 {
 	switch {
 	case option.Config.EnableIPSec:
 		return getLocalNode(logger).EncryptionKey
-	case option.Config.EnableWireguard:
+	case wgCfg.Enabled():
 		return wgTypes.StaticEncryptKey
 
 	}

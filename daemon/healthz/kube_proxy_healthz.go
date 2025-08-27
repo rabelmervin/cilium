@@ -77,7 +77,7 @@ func (r config) Flags(flags *pflag.FlagSet) {
 // status HTTP endpoint exposed on addr.
 // This endpoint reports the agent health status with the timestamp.
 func registerKubeProxyHealthzHTTPService(params kubeProxyHealthParams) error {
-	if params.Config.KubeProxyReplacementHealthzBindAddress == "" || params.KPRConfig.KubeProxyReplacement == option.KubeProxyReplacementFalse {
+	if params.Config.KubeProxyReplacementHealthzBindAddress == "" || !params.KPRConfig.KubeProxyReplacement {
 		return nil
 	}
 
@@ -142,7 +142,7 @@ func (h kubeproxyHealthzHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	// If node is in terminating state, we return ServiceUnavailable.
 	sr := h.statusCollector.GetStatus(true, false)
 	ln, _ := h.localNode.Get(r.Context())
-	if isUnhealthy(&sr) || ln.IsBeingDeleted {
+	if isUnhealthy(&sr) || ln.Local.IsBeingDeleted {
 		statusCode = http.StatusServiceUnavailable
 		lastUpdatedAt = h.lastUpdateAter.GetLastUpdatedAt()
 	}

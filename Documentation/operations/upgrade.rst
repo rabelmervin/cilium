@@ -288,158 +288,68 @@ communicating via the proxy must reconnect to re-establish connections.
 
 .. _current_release_required_changes:
 
-.. _1.18_upgrade_notes:
+.. _1.19_upgrade_notes:
 
-1.18 Upgrade Notes
+1.19 Upgrade Notes
 ------------------
-* ``cilium-dbg bpf policy`` now prints ``ANY`` and not ``reserved:unknown`` for a bpf policy entry that allows any peer identity.
-* The ``v2alpha1`` version of ``CiliumBGPClusterConfig``, ``CiliumBGPPeerConfig``, ``CiliumBGPAdvertisement``, ``CiliumBGPNodeConfig`` and
-  ``CiliumBGPNodeConfigOverride`` CRDs was deprecated in favor of the ``v2`` version. Change ``apiVersion: cilium.io/v2alpha1``
-  to ``apiVersion: cilium.io/v2`` for these CRDs in all your BGP configs. The previously deprecated field
-  ``spec.transport.localPort`` in ``CiliumBGPPeerConfig`` has been removed and will be ignored if it was configured in the ``v2alpha1`` version.
-* The ``CiliumBGPPeeringPolicy`` CRD is deprecated and will be removed in a future release. Please migrate to ``cilium.io/v2``
-  BGP CRDs (``CiliumBGPClusterConfig``, ``CiliumBGPPeerConfig``, ``CiliumBGPAdvertisement``, ``CiliumBGPNodeConfigOverride``) to configure BGP.
-* The ``v2alpha1`` version of ``CiliumCIDRGroup`` CRD was deprecated in favor of the ``v2`` version. Change ``apiVersion: cilium.io/v2alpha1``
-  to ``apiVersion: cilium.io/v2`` for all ``CiliumCIDRGroup`` resources.
-* The check for connectivity to the Kubernetes apiserver has been removed from the cilium-agent liveness probe. This can be turned back on
-  by setting the helm option ``livenessProbe.requireK8sConnectivity`` to ``true``.
-* The label ``io.cilium.k8s.policy.serviceaccount`` will be included in the default label list. If you configure your own identity-relevant labels 
-  on your cluster, the number of identities will temporarily increase during the upgrade, which will result in increased drops. If you would like 
-  to disable this new behavior, you can add ``!io\.cilium\.k8s\.policy\.serviceaccount`` to your identity-relevant labels to 
-  exclude the ``io.cilium.k8s.policy.serviceaccount`` label.
-* If using IPsec encryption the upgrade from v1.17 to v1.18 requires special attention.
-  Please reference :ref:`encryption_ipsec`.
-* If using an IPsec deployment within a Google Cloud GKE cluster the default firewall rules for the cluster's subnet
-  must be updated to allow ESP traffic.
-  See :ref:`encryption_ipsec` for details.
-* The Helm value of ``enableIPv4Masquerade`` in ``eni`` mode changes from ``true`` to ``false`` by default from 1.18.
-  To keep the ``enableIPv4Masquerade`` enabled, explicitly set the value for
-  this option to ``true``, or use a value strictly lower than 1.18 for
-  ``upgradeCompatibility``.
-* This Cilium version now requires a v5.10 Linux kernel or newer.
-* CiliumIdentity CRD does not contain Security Labels in metadata anymore except for the namespace label.
-* The support for Envoy Go Extensions (proxylib) is deprecated, and will be removed in a future release.
-* The kube_proxy_healthz endpoint no longer requires Kubernetes control plane connectivity to succeed.
+* MCS-API CoreDNS configuration recommendation has been updated. See :ref:`clustermesh_mcsapi_prereqs` for more details.
+* The ``v2alpha1`` version of ``CiliumLoadBalancerIPPool`` CRD has been deprecated in favor of the ``v2`` version. Please change ``apiVersion: cilium.io/v2alpha1``
+  to ``apiVersion: cilium.io/v2`` in your manifests for all ``CiliumLoadBalancerIPPool`` resources.
 * In a Cluster Mesh environment, network policy ingress and egress selectors currently select by default
   endpoints from all clusters unless one or more clusters are explicitly specified in the policy itself.
-  The new ``policy-default-local-cluster`` flag allows to change this behavior, and only select endpoints
+  The ``policy-default-local-cluster`` flag allows to change this behavior, and only select endpoints
   from the local cluster, unless explicitly specified, to improve the default security posture.
-  This option is intended to become the default in Cilium v1.19. If you are using Cilium ClusterMesh and network policies,
+  This option is now enabled by default in Cilium v1.19. If you are using Cilium ClusterMesh and network policies,
   you need to take action to update your network policies to avoid this change from breaking connectivity for applications
-  across different clusters. There is no need to do anything for the Cilium 1.17 to 1.18 upgrade, but it is strongly
-  recommended to check :ref:`change_policy_default_local_cluster` for details and migration recommendations to update
-  your network policies in advance for the Cilium 1.19 upgrade.
-* Creating or deleting policies via the local REST api is deprecated. This will be removed entirely in v1.19.
+  across different clusters. See :ref:`change_policy_default_local_cluster` for more details and migration recommendations
+  to update your network policies.
+* Kafka Network Policy support is deprecated and will be removed in Cilium v1.20.
+* Hubble field mask support was stabilized. In the Observer gRPC API, ``GetFlowsRequest.Experimental.field_mask`` was removed in favor of ``GetFlowsRequest.field_mask``. In the Hubble CLI, the ``--experimental-field-mask`` has been renamed to ``--field-mask`` and ``--experimental-use-default-field-mask`` renamed to ``-use-default-field-mask`` (now ``true`` by default).
+
+* ``enable-remote-node-masquerade`` config option is introduced.
+  To masquerade traffic to remote nodes in BPF masquerading mode,
+  use the option ``enable-remote-node-masquerade: "true"``.
+  This option requires ``enable-bpf-masquerade: "true"`` and also either
+  ``enable-ipv4-masquerade: "true"`` or ``enable-ipv6-masquerade: "true"``
+  to SNAT traffic for IPv4 and IPv6, respectively.
+  This flag currently masquerades traffic to node ``InternalIP`` addresses.
+  This may change in future. See :gh-issue:`35823`
+  and :gh-issue:`17177` for further discussion on this topic.
 
 Removed Options
 ~~~~~~~~~~~~~~~
-
-* The previously deprecated high-scale mode for ipcache has been removed.
-* The previously deprecated hubble-relay flag ``--dial-timeout`` has been removed.
-* The previously deprecated External Workloads feature has been removed. To remove stale resources, run ``kubectl delete crd ciliumexternalworkloads.cilium.io``. In addition, you might want to delete a K8s secret used by External Workloads. Run ``kubectl -n kube-system get secrets`` to find one.
-* The previously deprecated ``--datapath-mode=lb-only`` for plain Docker mode has been removed.
-* The ``update-ec2-adapter-limit-via-api`` CLI flag for the operator has been removed since the operator will only and always use the
-  EC2API to update the EC2 instance limit.
-* The ``aws-instance-limit-mapping`` CLI flag for the operator has been removed since the operator will only and always use the
-  EC2API to update the EC2 instance limit.
-* The previously deprecated flag ``--enable-k8s-terminating-endpoint`` has been removed.
-  The K8s terminating endpoints feature is unconditionally enabled.
-* The previously deprecated ``CONNTRACK_LOCAL`` option has been removed
-* The previously deprecated ``enableRuntimeDeviceDetection`` option has been removed
-* The previously deprecated and ignored operator flags ``ces-write-qps-limit``, ``ces-write-qps-burst``, ``ces-enable-dynamic-rate-limit``,
-  ``ces-dynamic-rate-limit-nodes``, ``ces-dynamic-rate-limit-qps-limit``, ``ces-dynamic-rate-limit-qps-burst`` have been removed.
-* The ``arping-refresh-period`` option has been removed. Cilium will now refresh neighbor entries based on the ``base_reachable_time_ms`` sysctl value associated with that entry.
+* The previously deprecated ``--bpf-lb-proto-diff`` flag has been removed.
+* The previously deprecated PCAP recorder feature and its accompanying flags (``--enable-recorder``,
+  ``--hubble-recorder-*``) have been removed.
+* The previously deprecated ``--enable-session-affinity``, ``--enable-internal-traffic-policy``, and
+  ``--enable-svc-source-range-check`` flags have been removed. Their corresponding features are
+  enabled by default.
 
 Deprecated Options
 ~~~~~~~~~~~~~~~~~~
 
-* Operator flag ``ces-slice-mode`` has been deprecated and will be removed in Cilium 1.19.
-  CiliumEndpointSlice batching mode defaults to first-come-first-serve mode.
-* The flag value ``--datapath-mode=lb-only`` for plain Docker mode has been migrated into
-  ``--bpf-lb-only`` and will be removed in Cilium 1.19.
-* ``k8s-api-server``: This option has been deprecated in favor of ``k8s-api-server-urls``
-  and will be removed in Cilium 1.19.
-* ``--l2-pod-announcements-interface`` has been deprecated in favor of
-  ``--l2-pod-announcements-interface-pattern`` and will be removed in Cilium 1.19.
-* The flag ``--enable-session-affinity`` (``sessionAffinity`` in Helm) has been deprecated and will be removed in Cilium 1.19.
-  The Session Affinity feature will be unconditionally enabled. Also, in Cilium 1.18, the
-  feature is enabled by default.
-* The custom calls feature (``--enable-custom-calls``) has been deprecated, and will
-  be removed in Cilium 1.19.
-* The flag ``--bpf-lb-proto-diff`` has been deprecated and will be removed in Cilium 1.19.
-  Service protocol differentiation will be unconditionally enabled.
-* The flags ``--enable-recorder``, ``--enable-hubble-recorder-api``, ``--hubble-recorder-storage-path``
-  and ``--hubble-recorder-sink-queue-size`` have been deprecated. The Hubble Recorder feature will be
-  removed in Cilium 1.19.
-  You can use `pwru <https://github.com/cilium/pwru>`_ with ``--filter-trace-xdp`` to trace XDP requests.
-* The flags ``--enable-node-port`` (``nodePort.enabled`` in Helm), ``--enable-host-port``, ``--enable-external-ips`` have been deprecated
-  and will be removed in Cilium 1.19. The kube-proxy replacement features will be only enabled when
-  ``--kube-proxy-replacent`` is set to ``true``.
-* The flag ``--enable-k8s-endpoint-slice`` have been deprecated and will be removed in Cilium 1.19.
-  The K8s Endpoint Slice feature will be unconditionally enabled.
-* The flag ``--enable-internal-traffic-policy`` (``enableInternalTrafficPolicy`` in Helm) has been deprecated and will be removed in Cilium 1.19. The
-  ``internalTrafficPolicy`` field in a Kubernetes Service object will be unconditionally respected.
-* The flag ``--enable-svc-source-range-check`` (``svcSourceRangeCheck`` in Helm) has been deprecated
-  and will be removed in Cilium 1.19. The feature will be enabled automatically when ``--kube-proxy-replacent``
-  is set to ``true``.
-* The flag ``--egress-multi-home-ip-rule-compat`` and the old IP rule scheme has been deprecated and will be removed
-  in Cilium 1.19. Running Cilium 1.18 with the flag set to ``false`` (default value) will migrate any existing IP rules
-  to the new scheme.
-* The flag ``--enable-ipv4-egress-gateway`` has been deprecated in favor of ``--enable-egress-gateway`` and will
-  be removed in Cilium 1.19.
 
 Helm Options
 ~~~~~~~~~~~~
+* The Helm option ``clustermesh.enableMCSAPISupport`` has been deprecated in favor of ``clustermesh.mcsapi.enabled``
+  and will be removed in Cilium 1.20.
+* The Helm option ``clustermesh.config.clusters`` now support a new format based on a dict
+  in addition to the previous list format. The new format is recommended for users installing
+  Cilium ClusterMesh without Cilium CLI and could allow you to organize your clusters definition
+  in multiple Helm value files. See the Cilium Helm chart documentation or value file for more details.
 
-* The Helm options ``hubble.export.fileMaxSizeMb``, ``hubble.export.fileMaxBackups``
-  and ``hubble.export.fileCompress`` have been deprecated in favor of their corresponding exporter
-  type options and will be removed in Cilium 1.19. More specifically, the static exporter options
-  are now located under ``hubble.export.static`` and the dynamic exporter options that generate
-  a configmap containing the exporter configuration are now under ``hubble.export.dynamic.config.content``.
-* The Helm option ``ciliumEndpointSlice.sliceMode`` has been removed. The slice mode defaults to first-come-first-serve mode.
-* The Helm chart now defaults to enabling exponential backoff for client-go by setting the environment variables
-  ``KUBE_CLIENT_BACKOFF_BASE`` and ``KUBE_CLIENT_BACKOFF_DURATION`` on the Cilium daemonset.
-  These can be customized using helm values ``k8sClientExponentialBackoff.backoffBaseSeconds`` and
-  ``k8sClientExponentialBackoff.backoffMaxDurationSeconds``. Users who were already setting these
-  using ``extraEnv`` should either remove them from ``extraEnv`` or set ``k8sClientExponentialBackoff.enabled=false``.
-* The deprecated Helm option ``hubble.relay.dialTimeout`` has been removed.
-* The new Helm option ``underlayProtocol`` allows selecting the IP family for the underlay. It defaults to IPv4.
-* ``k8s.apiServerURLs`` has been introduced to specify multiple Kubernetes API servers so that the agent can fail over
-  to an active instance.
-* ``eni.updateEC2AdapterLimitViaAPI`` is removed since the operator will only and always use the EC2API to update the EC2 instance limit.
-* The Helm option ``l2PodAnnouncements.interface`` has been deprecated in favor of ``l2PodAnnouncements.interfacePattern``
-  and will be removed in Cilium 1.19.
-* The Helm value of ``enableIPv4Masquerade`` in ``eni`` mode changes from ``true`` to ``false`` by default from 1.18.
-* The Helm option ``clustermesh.apiserver.kvstoremesh.enabled`` has been deprecated and will be removed in Cilium 1.19.
-  Starting from 1.19 KVStoreMesh will be unconditionally enabled when the Cluster Mesh API Server is enabled.
-* The ``l2NeighDiscovery.refreshPeriod`` option has been removed. Cilium will now refresh neighbor entries based on the ``base_reachable_time_ms`` sysctl value associated with that entry.
-* The ``l2NeighDiscovery.enabled`` option has been changed to default to ``false``.
-* The deprecated Helm option ``enableCiliumEndpointSlice`` has been removed. Set
-  ``ciliumEndpointSlice.enabled`` instead to enable CiliumEndpointSlices.
-* ``localRedirectPolicy`` helm option has been deprecated. Set ``localRedirectPolicies.enabled`` instead.
-* The new ``localRedirectPolicies.addressMatcherCIDRs`` option can be used to limit what addresses are allowed in an address match of a CiliumLocalRedirectPolicy.
 
 Agent Options
 ~~~~~~~~~~~~~
 
-* The new agent flag ``underlay-protocol`` allows selecting the IP family for the underlay. It defaults to IPv4.
-* ``k8s-api-server-urls``: This option specifies a list of URLs for Kubernetes API server instances to support high availability
-  for the servers. The agent will fail over to an active instance in case of connectivity failures at runtime.
-* The ``--enable-l2-neigh-discovery`` flag has been changed to default to ``false``.
-* The ``kvstore-connectivity-timeout`` flag is renamed to ``identity-allocation-timeout`` to better reflect its purpose.
-* The ``kvstore-periodic-sync`` flag is renamed to ``identity-allocation-sync-interval`` to better reflect its purpose.
 
 Cluster Mesh API Server Options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-* The previously unused ``kvstore-connectivity-timeout`` and ``kvstore-periodic-sync``
-  flags have been removed from the apiserver and kvstoremesh commands.
 
 Bugtool Options
 ~~~~~~~~~~~~~~~
 
-* The deprecated flag ``k8s-mode`` (and related flags ``cilium-agent-container-name``, ``k8s-namespace`` & ``k8s-label``)
-  have been removed. Cilium CLI should be used to gather a sysdump from a K8s cluster.
 
 Added Metrics
 ~~~~~~~~~~~~~
@@ -447,22 +357,12 @@ Added Metrics
 Removed Metrics
 ~~~~~~~~~~~~~~~
 
-The following deprecated metrics were removed:
-
-* ``node_connectivity_status``
-* ``node_connectivity_latency_seconds``
+* ``k8s_internal_traffic_policy_enabled`` has been removed, because the corresponding feature is enabled by default.
 
 Changed Metrics
 ~~~~~~~~~~~~~~~
 
-* ``doublewrite_identity_crd_total_count`` has been renamed to ``doublewrite_crd_identities``
-* ``doublewrite_identity_kvstore_total_count`` has been renamed to ``doublewrite_kvstore_identities``
-* ``doublewrite_identity_crd_only_count`` has been renamed to ``doublewrite_crd_only_identities``
-* ``doublewrite_identity_kvstore_only_count`` has been renamed to ``doublewrite_kvstore_only_identities``
-* The type of the ``cilium_agent_bootstrap_seconds`` metric has been changed from histogram to gauge.
-* ``cilium_agent_bgp_control_plane_reconcile_error_count`` has been renamed to ``cilium_agent_bgp_control_plane_reconcile_errors_total``.
-* ``cilium_operator_bgp_control_plane_cluster_config_error_count`` has been renamed to ``cilium_operator_bgp_control_plane_reconcile_errors_total``
-  and its label ``bgp_cluster_config`` has been replaced with labels ``resource_kind`` and ``resource_name``.
+* ``k8s_client_rate_limiter_duration_seconds`` no longer has labels ``path`` and ``method``.
 
 Deprecated Metrics
 ~~~~~~~~~~~~~~~~~~
@@ -689,7 +589,7 @@ Below is an example where there is one network policy that needs to be updated:
 
 .. code-block:: shell-session
 
-    $ cilium clustermesh prepare-policy-default-local-cluster --all-namespaces
+    $ cilium clustermesh inspect-policy-default-local-cluster --all-namespaces
 
     ⚠️ CiliumNetworkPolicy 0/1
             ⚠️ default/allow-from-bar

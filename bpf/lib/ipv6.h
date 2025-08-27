@@ -52,7 +52,6 @@ struct ipv6_frag_l4ports {
 	__be16 dport;
 } __packed;
 
-#ifdef ENABLE_IPV6_FRAGMENTS
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, struct ipv6_frag_id);
@@ -61,7 +60,6 @@ struct {
 	__uint(max_entries, CILIUM_IPV6_FRAG_MAP_MAX_ENTRIES);
 	__uint(map_flags, LRU_MEM_FLAVOR);
 } cilium_ipv6_frag_datagrams __section_maps_btf;
-#endif
 
 static __always_inline int ipv6_optlen(const struct ipv6_opt_hdr *opthdr)
 {
@@ -143,7 +141,7 @@ static __always_inline int ipv6_hdrlen_offset(struct __ctx_buff *ctx, int l3_off
 		}
 
 		if (nh == NEXTHDR_FRAGMENT) {
-			struct ipv6_frag_hdr frag;
+			struct ipv6_frag_hdr frag = { 0 };
 
 			if (ctx_load_bytes(ctx, l3_off + len, &frag, sizeof(frag)) < 0)
 				return DROP_INVALID;
@@ -195,24 +193,25 @@ static __always_inline bool ipv6_addr_equals(const union v6addr *a,
 }
 
 static __always_inline
-void ipv6_mc_mac_set(const union v6addr *addr, union macaddr *mac)
+void ipv6_sol_mc_mac_set(const union v6addr *addr, union macaddr *mac)
 {
 	mac->addr[0] = 0x33;
 	mac->addr[1] = 0x33;
-	memcpy((__u8 *)mac + 2, (__u8 *)addr + 12, 4);
+	mac->addr[2] = 0xFF;
+	memcpy((__u8 *)mac + 3, (__u8 *)addr + 13, 3);
 }
 
 static __always_inline
-bool ipv6_is_mc_mac(const union v6addr *addr, const union macaddr *mac)
+bool ipv6_is_sol_mc_mac(const union v6addr *addr, const union macaddr *mac)
 {
 	union macaddr mc_mac __align_stack_8;
 
-	ipv6_mc_mac_set(addr, &mc_mac);
+	ipv6_sol_mc_mac_set(addr, &mc_mac);
 	return eth_addrcmp((const union macaddr *)&mc_mac, mac) == 0;
 }
 
 static __always_inline
-void ipv6_mc_addr_set(const union v6addr *addr, union v6addr *mc_addr)
+void ipv6_sol_mc_addr_set(const union v6addr *addr, union v6addr *mc_addr)
 {
 	const union v6addr base_addr = { .addr = {0xff, 0x02, 0, 0, 0, 0, 0, 0,
 					  0, 0, 0, 0x01, 0xFF, 0, 0, 0} };
